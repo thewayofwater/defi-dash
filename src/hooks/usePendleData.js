@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 
-const MORPHO_URL = "/api/morpho";
+const PENDLE_URL = "/api/pendle";
 
-export function useMorphoData() {
-  const [data, setData] = useState({ vaults: [], vaultsV2: [], markets: [], history: [] });
+export function usePendleData() {
+  const [data, setData] = useState({ markets: [], spendle: null });
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
@@ -13,7 +13,7 @@ export function useMorphoData() {
   const fetchData = useCallback((isInitial = false) => {
     if (isInitial) setLoading(true);
     else setRefreshing(true);
-    fetch(MORPHO_URL)
+    fetch(PENDLE_URL)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();

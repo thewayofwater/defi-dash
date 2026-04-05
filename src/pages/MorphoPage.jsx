@@ -4,7 +4,7 @@ import {
 } from "recharts";
 import { useMorphoData } from "../hooks/useMorphoData";
 import { fmt, fmtPct } from "../utils/format";
-import { SectionHeader, LoadingSpinner, ModuleCard } from "../components/Shared";
+import { SectionHeader, LoadingSpinner, ModuleCard, ChartShimmer } from "../components/Shared";
 
 const mono = "'JetBrains Mono', monospace";
 
@@ -418,7 +418,7 @@ function ProtocolTvlChart({ history }) {
     history
       .filter((h) => h.tvl > 0)
       .map((h) => ({
-        date: new Date(h.date * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+        date: new Date(h.date * 1000).toISOString().slice(0, 10),
         tvl: h.tvl,
         supply: h.supply,
         borrow: h.borrow,
@@ -445,9 +445,9 @@ function ProtocolTvlChart({ history }) {
             <stop offset="100%" stopColor="#f87171" stopOpacity={0} />
           </linearGradient>
         </defs>
-        <XAxis dataKey="date" tick={{ fill: "#6b7a8d", fontSize: 10, fontFamily: mono }} axisLine={false} tickLine={false} interval={Math.floor(data.length / 6)} />
+        <XAxis dataKey="date" tick={{ fill: "#6b7a8d", fontSize: 10, fontFamily: mono }} axisLine={false} tickLine={false} interval={Math.floor(data.length / 6)} tickFormatter={(v) => v.slice(5)} />
         <YAxis tickFormatter={(v) => fmt(v)} tick={{ fill: "#6b7a8d", fontSize: 10, fontFamily: mono }} axisLine={false} tickLine={false} />
-        <Tooltip {...chartTooltipStyle} formatter={(v, name) => [fmt(v), name === "tvl" ? "TVL" : name === "supply" ? "Supply" : "Borrow"]} />
+        <Tooltip {...chartTooltipStyle} labelFormatter={(v) => v} formatter={(v, name) => [fmt(v), name === "tvl" ? "TVL" : name === "supply" ? "Supply" : "Borrow"]} />
         <Legend
           formatter={(value) => value === "tvl" ? "TVL" : value === "supply" ? "Supply" : "Borrow"}
           wrapperStyle={{ fontSize: 10, fontFamily: mono, color: "#94a3b8" }}
@@ -936,9 +936,10 @@ function NewVaultsTable({ vaults, cutoff }) {
 }
 
 export default function MorphoPage() {
-  const { vaults, vaultsV2, markets, history, loading, error, lastUpdated } = useMorphoData();
+  const { vaults, vaultsV2, markets, history, loading, refreshing, refreshKey, error, lastUpdated, refresh } = useMorphoData();
   const [tab, setTab] = useState("markets");
   const [newPeriodDays, setNewPeriodDays] = useState(14);
+
   const newCutoff = useMemo(() => Math.floor(Date.now() / 1000) - newPeriodDays * 86400, [newPeriodDays]);
 
   const curatorColorMap = useMemo(() => {
@@ -985,17 +986,47 @@ export default function MorphoPage() {
 
   return (
     <div style={{ background: "#0a0e17", color: "#e2e8f0", minHeight: "100vh" }}>
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+      `}</style>
       {/* Header */}
       <div style={{ padding: "20px 26px 16px" }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, color: "#f1f5f9", letterSpacing: "-0.02em" }}>
-          Morpho
-          <span style={{ color: "#a855f7", marginLeft: 8, fontSize: 10, fontWeight: 500, fontFamily: mono, verticalAlign: "middle", background: "rgba(168,85,247,0.07)", padding: "2px 7px", borderRadius: 3, letterSpacing: 1 }}>
-            PROTOCOL
-          </span>
-        </h1>
-        <div style={{ fontSize: 12, color: "#2d3a4a", marginTop: 2, fontFamily: mono }}>
-          Live data from Morpho API
-          {lastUpdated && ` · Updated ${lastUpdated.toLocaleTimeString()}`}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, color: "#f1f5f9", letterSpacing: "-0.02em" }}>
+              Morpho
+              <span style={{ color: "#a855f7", marginLeft: 8, fontSize: 10, fontWeight: 500, fontFamily: mono, verticalAlign: "middle", background: "rgba(168,85,247,0.07)", padding: "2px 7px", borderRadius: 3, letterSpacing: 1 }}>
+                PROTOCOL
+              </span>
+            </h1>
+            <div style={{ fontSize: 12, color: "#4f5e6f", marginTop: 2, fontFamily: mono }}>
+              Live data from Morpho API
+              {lastUpdated && ` · Updated ${lastUpdated.toLocaleTimeString()}`}
+            </div>
+          </div>
+          <button
+            onClick={refresh}
+            disabled={refreshing}
+            style={{
+              background: refreshing ? "rgba(168,85,247,0.15)" : "rgba(255,255,255,0.04)",
+              border: "1px solid rgba(255,255,255,0.08)",
+              borderRadius: 6,
+              padding: "7px 14px",
+              fontSize: 11,
+              fontFamily: mono,
+              color: refreshing ? "#a855f7" : "#94a3b8",
+              cursor: refreshing ? "default" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              transition: "all 0.2s",
+              letterSpacing: 0.5,
+            }}
+          >
+            <span style={{ display: "inline-block", animation: refreshing ? "spin 1s linear infinite" : "none", fontSize: 13 }}>&#x21bb;</span>
+            {refreshing ? "Refreshing..." : "Refresh"}
+          </button>
         </div>
 
         {/* Stats hero + grid */}
@@ -1010,33 +1041,29 @@ export default function MorphoPage() {
             display: "flex",
             flexDirection: "column",
             justifyContent: "center",
+            position: "relative",
+            overflow: "hidden",
           }}>
+            {refreshing && <div style={{ position: "absolute", inset: 0, background: "linear-gradient(90deg, transparent 0%, rgba(168,85,247,0.08) 40%, rgba(168,85,247,0.12) 50%, rgba(168,85,247,0.08) 60%, transparent 100%)", backgroundSize: "200% 100%", animation: "shimmer 1.5s ease-in-out infinite" }} />}
             <div style={{ fontSize: 11, color: "#a855f7", fontFamily: mono, letterSpacing: 1, textTransform: "uppercase" }}>Total Value Locked</div>
             <div style={{ fontSize: 32, fontWeight: 700, color: "#e2e8f0", fontFamily: mono, marginTop: 4 }}>{fmt(stats.totalTvl)}</div>
             <div style={{ fontSize: 11, color: "#6b7a8d", fontFamily: mono, marginTop: 2 }}>protocol-wide</div>
           </div>
           {/* 2×2 grid */}
           <div style={{ flex: 2, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-            <div style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 6, padding: "10px 16px" }}>
-              <div style={{ fontSize: 11, color: "#5a6678", fontFamily: mono, letterSpacing: 1, textTransform: "uppercase" }}>V1 Vaults</div>
-              <div style={{ fontSize: 20, fontWeight: 700, color: "#e2e8f0", fontFamily: mono, marginTop: 2 }}>{fmt(stats.totalVaultTvl)}</div>
-              <div style={{ fontSize: 11, color: "#6b7a8d", fontFamily: mono }}>{vaults.length} vaults</div>
-            </div>
-            <div style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 6, padding: "10px 16px" }}>
-              <div style={{ fontSize: 11, color: "#5a6678", fontFamily: mono, letterSpacing: 1, textTransform: "uppercase" }}>V2 Vaults</div>
-              <div style={{ fontSize: 20, fontWeight: 700, color: "#e2e8f0", fontFamily: mono, marginTop: 2 }}>{fmt(stats.totalV2Tvl)}</div>
-              <div style={{ fontSize: 11, color: "#6b7a8d", fontFamily: mono }}>{vaultsV2.length} vaults</div>
-            </div>
-            <div style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 6, padding: "10px 16px" }}>
-              <div style={{ fontSize: 11, color: "#5a6678", fontFamily: mono, letterSpacing: 1, textTransform: "uppercase" }}>Supply</div>
-              <div style={{ fontSize: 20, fontWeight: 700, color: "#e2e8f0", fontFamily: mono, marginTop: 2 }}>{fmt(stats.totalMarketSupply)}</div>
-              <div style={{ fontSize: 11, color: "#6b7a8d", fontFamily: mono }}>{markets.length} markets</div>
-            </div>
-            <div style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 6, padding: "10px 16px" }}>
-              <div style={{ fontSize: 11, color: "#5a6678", fontFamily: mono, letterSpacing: 1, textTransform: "uppercase" }}>Borrow</div>
-              <div style={{ fontSize: 20, fontWeight: 700, color: "#e2e8f0", fontFamily: mono, marginTop: 2 }}>{fmt(stats.totalMarketBorrow)}</div>
-              <div style={{ fontSize: 11, color: "#6b7a8d", fontFamily: mono }}>{stats.totalMarketSupply > 0 ? fmtPct(stats.totalMarketBorrow / stats.totalMarketSupply * 100) : "—"} util</div>
-            </div>
+            {[
+              { label: "V1 Vaults", value: fmt(stats.totalVaultTvl), sub: `${vaults.length} vaults` },
+              { label: "V2 Vaults", value: fmt(stats.totalV2Tvl), sub: `${vaultsV2.length} vaults` },
+              { label: "Supply", value: fmt(stats.totalMarketSupply), sub: `${markets.length} markets` },
+              { label: "Borrow", value: fmt(stats.totalMarketBorrow), sub: stats.totalMarketSupply > 0 ? `${fmtPct(stats.totalMarketBorrow / stats.totalMarketSupply * 100)} util` : "—" },
+            ].map((card) => (
+              <div key={card.label} style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 6, padding: "10px 16px", position: "relative", overflow: "hidden" }}>
+                {refreshing && <div style={{ position: "absolute", inset: 0, background: "linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.04) 40%, rgba(255,255,255,0.06) 50%, rgba(255,255,255,0.04) 60%, transparent 100%)", backgroundSize: "200% 100%", animation: "shimmer 1.5s ease-in-out infinite" }} />}
+                <div style={{ fontSize: 11, color: "#5a6678", fontFamily: mono, letterSpacing: 1, textTransform: "uppercase" }}>{card.label}</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: "#e2e8f0", fontFamily: mono, marginTop: 2 }}>{card.value}</div>
+                <div style={{ fontSize: 11, color: "#6b7a8d", fontFamily: mono }}>{card.sub}</div>
+              </div>
+            ))}
           </div>
         </div>
 
@@ -1047,38 +1074,54 @@ export default function MorphoPage() {
         {history.length > 0 && (
           <ModuleCard>
             <SectionHeader title="Protocol TVL" subtitle="Historical TVL, supply, and borrow across all chains" />
-            <ProtocolTvlChart history={history} />
+            {refreshing ? <ChartShimmer height={280} /> : (
+              <div key={refreshKey}><ProtocolTvlChart history={history} /></div>
+            )}
           </ModuleCard>
         )}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
           <ModuleCard>
             <SectionHeader title="TVL by Curator" subtitle="Combined V1 + V2 vault deposits per curator" />
-            <CuratorTvlChart vaults={[...vaults, ...vaultsV2]} curatorColorMap={curatorColorMap} />
+            {refreshing ? <ChartShimmer height={280} /> : (
+              <div key={refreshKey}><CuratorTvlChart vaults={[...vaults, ...vaultsV2]} curatorColorMap={curatorColorMap} /></div>
+            )}
           </ModuleCard>
           <ModuleCard>
             <SectionHeader title="Fee Revenue by Curator" subtitle="Estimated annualized performance fee revenue (TVL × yield × fee rate)" />
-            <FeeRevenueChart vaults={[...vaults, ...vaultsV2]} curatorColorMap={curatorColorMap} />
+            {refreshing ? <ChartShimmer height={280} /> : (
+              <div key={refreshKey}><FeeRevenueChart vaults={[...vaults, ...vaultsV2]} curatorColorMap={curatorColorMap} /></div>
+            )}
           </ModuleCard>
           <ModuleCard>
             <SectionHeader title="TVL by Chain" subtitle="Combined vault and market TVL per chain" />
-            <ChainTvlChart vaults={vaults} vaultsV2={vaultsV2} markets={markets} />
+            {refreshing ? <ChartShimmer height={280} /> : (
+              <div key={refreshKey}><ChainTvlChart vaults={vaults} vaultsV2={vaultsV2} markets={markets} /></div>
+            )}
           </ModuleCard>
           <ModuleCard>
             <SectionHeader title="Vault Count by Chain" subtitle="Number of V1 + V2 vaults deployed per chain" />
-            <VaultCountByChainChart vaults={vaults} vaultsV2={vaultsV2} />
+            {refreshing ? <ChartShimmer height={280} /> : (
+              <div key={refreshKey}><VaultCountByChainChart vaults={vaults} vaultsV2={vaultsV2} /></div>
+            )}
           </ModuleCard>
           <ModuleCard>
             <SectionHeader title="Collateral by Type" subtitle="Total supply by collateral mechanism" />
-            <CollateralTypeChart markets={markets} />
+            {refreshing ? <ChartShimmer height={280} /> : (
+              <div key={refreshKey}><CollateralTypeChart markets={markets} /></div>
+            )}
           </ModuleCard>
           <ModuleCard>
             <SectionHeader title="LLTV Distribution" subtitle="Liquidation LTV across markets" />
-            <LltvDistributionChart markets={markets} />
+            {refreshing ? <ChartShimmer height={280} /> : (
+              <div key={refreshKey}><LltvDistributionChart markets={markets} /></div>
+            )}
           </ModuleCard>
         </div>
         <ModuleCard>
           <SectionHeader title="Collateral Explorer" subtitle="All collateral assets by type, supply, and loan pairings" />
-          <CollateralExplorer markets={markets} />
+          {refreshing ? <ChartShimmer height={200} /> : (
+            <div key={refreshKey}><CollateralExplorer markets={markets} /></div>
+          )}
         </ModuleCard>
       </div>
 
@@ -1123,27 +1166,37 @@ export default function MorphoPage() {
               ))}
             </div>
           </div>
-          {tab === "markets" && <NewMarketsTable markets={markets} cutoff={newCutoff} />}
-          {tab === "v1" && <NewVaultsTable vaults={vaults} cutoff={newCutoff} />}
-          {tab === "v2" && <NewVaultsTable vaults={vaultsV2} cutoff={newCutoff} />}
+          {refreshing ? <ChartShimmer height={200} /> : (
+            <div key={refreshKey}>
+              {tab === "markets" && <NewMarketsTable markets={markets} cutoff={newCutoff} />}
+              {tab === "v1" && <NewVaultsTable vaults={vaults} cutoff={newCutoff} />}
+              {tab === "v2" && <NewVaultsTable vaults={vaultsV2} cutoff={newCutoff} />}
+            </div>
+          )}
         </ModuleCard>
 
         {tab === "markets" && (
           <ModuleCard>
             <SectionHeader title="Morpho Markets" subtitle={`${markets.length} active markets`} />
-            <MarketTable markets={markets} />
+            {refreshing ? <ChartShimmer height={300} /> : (
+              <div key={refreshKey}><MarketTable markets={markets} /></div>
+            )}
           </ModuleCard>
         )}
         {tab === "v1" && (
           <ModuleCard>
             <SectionHeader title="Morpho V1 Vaults" subtitle={`${vaults.length} vaults`} />
-            <VaultTable vaults={vaults} type="V1" />
+            {refreshing ? <ChartShimmer height={300} /> : (
+              <div key={refreshKey}><VaultTable vaults={vaults} type="V1" /></div>
+            )}
           </ModuleCard>
         )}
         {tab === "v2" && (
           <ModuleCard>
             <SectionHeader title="Morpho V2 Vaults" subtitle={`${vaultsV2.length} vaults`} />
-            <VaultTable vaults={vaultsV2} type="V2" />
+            {refreshing ? <ChartShimmer height={300} /> : (
+              <div key={refreshKey}><VaultTable vaults={vaultsV2} type="V2" /></div>
+            )}
           </ModuleCard>
         )}
       </div>

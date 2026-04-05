@@ -6,6 +6,7 @@ import {
   SectionHeader,
   LoadingSpinner,
   ModuleCard,
+  ChartShimmer,
 } from "./components/Shared";
 import TVLHeatmap from "./components/TVLHeatmap";
 import AssetYieldBreakdown from "./components/AssetYieldBreakdown";
@@ -26,6 +27,7 @@ export default function App() {
     error,
     lastUpdated,
     refreshing,
+    refreshKey,
     refresh,
     assetYields,
     assetPools,
@@ -96,6 +98,7 @@ export default function App() {
 
   return (
     <div style={{ background: "#0a0e17", color: "#e2e8f0", minHeight: "100vh" }}>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       {/* Header */}
       <div
         style={{
@@ -143,7 +146,7 @@ export default function App() {
             <div
               style={{
                 fontSize: 12,
-                color: "#2d3a4a",
+                color: "#4f5e6f",
                 marginTop: 2,
                 fontFamily: mono,
               }}
@@ -152,40 +155,28 @@ export default function App() {
               {lastUpdated && ` · Updated ${lastUpdated.toLocaleTimeString()}`}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <button
-              onClick={refresh}
-              disabled={refreshing}
-              style={{
-                background: refreshing ? "rgba(34,211,238,0.08)" : "rgba(255,255,255,0.04)",
-                border: refreshing ? "1px solid rgba(34,211,238,0.2)" : "1px solid rgba(255,255,255,0.08)",
-                borderRadius: 4,
-                padding: "5px 10px",
-                fontSize: 10,
-                color: refreshing ? "#22d3ee" : "#4a5568",
-                fontFamily: mono,
-                letterSpacing: 0.5,
-                cursor: refreshing ? "default" : "pointer",
-                opacity: refreshing ? 0.8 : 1,
-              }}
-            >
-              {refreshing ? "↻ REFRESHING..." : "↻ REFRESH"}
-            </button>
-            <div
-              style={{
-                background: "rgba(34,211,238,0.07)",
-                border: "1px solid rgba(34,211,238,0.12)",
-                borderRadius: 4,
-                padding: "5px 10px",
-                fontSize: 10,
-                color: "#22d3ee",
-                fontFamily: mono,
-                letterSpacing: 0.5,
-              }}
-            >
-              LIVE
-            </div>
-          </div>
+          <button
+            onClick={refresh}
+            disabled={refreshing}
+            style={{
+              background: refreshing ? "rgba(34,211,238,0.15)" : "rgba(255,255,255,0.04)",
+              border: "1px solid rgba(255,255,255,0.08)",
+              borderRadius: 6,
+              padding: "7px 14px",
+              fontSize: 11,
+              fontFamily: mono,
+              color: refreshing ? "#22d3ee" : "#94a3b8",
+              cursor: refreshing ? "default" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              transition: "all 0.2s",
+              letterSpacing: 0.5,
+            }}
+          >
+            <span style={{ display: "inline-block", animation: refreshing ? "spin 1s linear infinite" : "none", fontSize: 13 }}>&#x21bb;</span>
+            {refreshing ? "Refreshing..." : "Refresh"}
+          </button>
         </div>
 
         {/* Asset tabs */}
@@ -238,7 +229,7 @@ export default function App() {
                 <div
                   style={{
                     fontSize: 10,
-                    color: isSelected ? "#3f4e5f" : "#2d3a4a",
+                    color: isSelected ? "#3f4e5f" : "#4f5e6f",
                     fontFamily: mono,
                     marginTop: 1,
                   }}
@@ -270,14 +261,18 @@ export default function App() {
 
         <ModuleCard>
           <SectionHeader
-            title={`${selectedAsset} Trending Yields`}
-            subtitle={`Biggest APY movers over the past 7 days`}
+            title={`${selectedAsset} Top Yields`}
+            subtitle={`Highest yielding pools by APY`}
           />
-          <TrendingYields trending={trendingPools} asset={selectedAsset} />
+          {refreshing ? <ChartShimmer height={180} /> : (
+            <div key={refreshKey}><TrendingYields trending={trendingPools} asset={selectedAsset} /></div>
+          )}
         </ModuleCard>
 
         <ModuleCard>
-          <TVLHeatmap pools={assetPools} asset={selectedAsset} />
+          {refreshing ? <ChartShimmer height={300} /> : (
+            <div key={refreshKey}><TVLHeatmap pools={assetPools} asset={selectedAsset} /></div>
+          )}
         </ModuleCard>
 
         <ModuleCard>
@@ -285,7 +280,9 @@ export default function App() {
             title={`${selectedAsset} Yield Breakdown`}
             subtitle={`Top protocols and chains by ${selectedAsset} yield (single-exposure pools)`}
           />
-          <AssetYieldBreakdown stats={assetProtocolStats} asset={selectedAsset} yieldIndex={yieldIndex} color={color} />
+          {refreshing ? <ChartShimmer height={250} /> : (
+            <div key={refreshKey}><AssetYieldBreakdown stats={assetProtocolStats} asset={selectedAsset} yieldIndex={yieldIndex} color={color} /></div>
+          )}
         </ModuleCard>
 
         <ModuleCard>
@@ -293,7 +290,9 @@ export default function App() {
             title={`${selectedAsset} Lending Rates`}
             subtitle={`Supply APY by protocol vs. ${selectedAsset} yield index`}
           />
-          <RateOverlay rateData={assetLendingRates} asset={selectedAsset} yieldIndex={yieldIndex} color={color} />
+          {refreshing ? <ChartShimmer height={250} /> : (
+            <div key={refreshKey}><RateOverlay rateData={assetLendingRates} asset={selectedAsset} yieldIndex={yieldIndex} color={color} /></div>
+          )}
         </ModuleCard>
 
         {/* Footer */}
@@ -302,7 +301,7 @@ export default function App() {
             textAlign: "center",
             padding: "12px 0",
             fontSize: 10,
-            color: "#1e2838",
+            color: "#3a4a5a",
             fontFamily: mono,
             borderTop: "1px solid rgba(255,255,255,0.025)",
           }}

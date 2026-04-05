@@ -6,6 +6,7 @@ const mono = "'JetBrains Mono', monospace";
 const NAV_ITEMS = [
   { path: "/", label: "Overview" },
   { path: "/morpho", label: "Morpho" },
+  { path: "/pendle", label: "Pendle" },
 ];
 
 export default function NavBar() {

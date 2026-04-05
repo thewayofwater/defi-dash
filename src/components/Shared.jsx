@@ -173,6 +173,26 @@ export function ModuleCard({ children }) {
   );
 }
 
+export function ChartShimmer({ height = 200 }) {
+  return (
+    <div style={{ position: "relative", height, borderRadius: 6, overflow: "hidden", background: "rgba(255,255,255,0.02)" }}>
+      <div style={{
+        position: "absolute", inset: 0,
+        background: "linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.04) 40%, rgba(255,255,255,0.06) 50%, rgba(255,255,255,0.04) 60%, transparent 100%)",
+        backgroundSize: "200% 100%",
+        animation: "shimmer 1.5s ease-in-out infinite",
+      }} />
+      {/* Fake bar/line shapes */}
+      <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, display: "flex", alignItems: "flex-end", gap: 4, padding: "0 20px 20px" }}>
+        {[40, 65, 50, 80, 55, 70, 45, 75, 60, 85, 50, 68].map((h, i) => (
+          <div key={i} style={{ flex: 1, height: `${h}%`, background: "rgba(255,255,255,0.03)", borderRadius: "3px 3px 0 0" }} />
+        ))}
+      </div>
+      <style>{`@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }`}</style>
+    </div>
+  );
+}
+
 export const tooltipStyle = {
   background: "#131926",
   border: "1px solid rgba(255,255,255,0.07)",

@@ -73,7 +73,7 @@ export default function RateOverlay({ rateData, asset, yieldIndex, color }) {
       <div
         style={{
           fontSize: 10,
-          color: "#2d3a4a",
+          color: "#4f5e6f",
           textAlign: "center",
           marginTop: 3,
           fontFamily: mono,

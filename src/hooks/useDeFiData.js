@@ -1,10 +1,25 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { CATEGORY_MAP, CHAIN_MIN_POOLS } from "../utils/constants";
+import { CATEGORY_MAP, CHAIN_MIN_POOLS, chainName } from "../utils/constants";
 
 const POOLS_URL = "https://yields.llama.fi/pools";
 const PROTOCOLS_URL = "https://api.llama.fi/protocols";
+const MORPHO_URL = "/api/morpho";
 const MIN_TVL = 1_000_000;
 const REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes
+
+// Stablecoin detection for Morpho pools (DeFiLlama provides its own flag)
+const STABLECOIN_SYMBOLS = new Set([
+  "USDC", "USDT", "DAI", "USDS", "FRAX", "LUSD", "GHO", "PYUSD", "USDM",
+  "USDE", "SUSDE", "SDAI", "SUSDS", "CUSD", "DOLA", "CRVUSD", "MKUSD",
+  "FDUSD", "TUSD", "BUSD", "GUSD", "USR", "USDA", "USDB", "USD0",
+  "RLUSD", "AUSD", "USDO", "USDBC",
+  "EURC", "EURS", "EURE", "AGEUR", "EUROC",
+]);
+
+function isStablecoinAsset(symbol) {
+  if (!symbol) return false;
+  return STABLECOIN_SYMBOLS.has(symbol.toUpperCase());
+}
 
 // Per-token matchers for checking individual tokens in a symbol
 const TOKEN_MATCHERS = {
@@ -78,12 +93,52 @@ function computeWeightedApy(pools) {
   return pools.reduce((s, p) => s + p.apy * (p.tvlUsd / totalTvl), 0);
 }
 
+// Map Morpho vaults into the standard pool shape
+function mapMorphoVaults(vaults) {
+  return vaults
+    .filter((v) => v.tvlUsd >= 500000 && v.apy > 0 && v.apy < 200)
+    .map((v) => ({
+      project: `morpho-${v.type}`,
+      symbol: v.asset || v.symbol,
+      chain: v.chain,
+      tvlUsd: v.tvlUsd,
+      apy: v.apy,
+      pool: `morpho-vault-${v.address}`,
+      url: `https://app.morpho.org/${v.chain.toLowerCase()}/vault/${v.address}`,
+      stablecoin: isStablecoinAsset(v.asset),
+      exposure: "single",
+      dashCategory: "Lending",
+      apyPct7D: null,
+    }));
+}
+
+// Map Morpho markets (supply side) into the standard pool shape
+function mapMorphoMarkets(markets) {
+  return markets
+    .filter((m) => m.supplyUsd >= 500000 && m.netSupplyApy > 0 && m.netSupplyApy < 200)
+    .map((m) => ({
+      project: "morpho-markets",
+      symbol: m.loanAsset,
+      displaySymbol: m.collateralAsset ? `${m.loanAsset} (${m.collateralAsset})` : m.loanAsset,
+      chain: m.chain,
+      tvlUsd: m.supplyUsd,
+      apy: m.netSupplyApy,
+      pool: `morpho-market-${m.marketId}`,
+      url: `https://app.morpho.org/${m.chain.toLowerCase()}/market/${m.marketId}`,
+      stablecoin: isStablecoinAsset(m.loanAsset),
+      exposure: "single",
+      dashCategory: "Lending",
+      apyPct7D: null,
+    }));
+}
+
 export function useDeFiData(selectedAsset) {
   const [pools, setPools] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [refreshKey, setRefreshKey] = useState(0);
   const intervalRef = useRef(null);
 
   const fetchData = useCallback((isInitial = false, isManual = false) => {
@@ -98,29 +153,46 @@ export function useDeFiData(selectedAsset) {
         if (!r.ok) throw new Error(`Pools HTTP ${r.status}`);
         return r.json();
       }),
+      // Morpho fetch — graceful fallback if it fails
+      fetch(MORPHO_URL).then((r) => {
+        if (!r.ok) return { vaults: [], vaultsV2: [], markets: [] };
+        return r.json();
+      }).catch(() => ({ vaults: [], vaultsV2: [], markets: [] })),
     ])
-      .then(([protocols, poolsJson]) => {
+      .then(([protocols, poolsJson, morphoJson]) => {
         const projectCategoryMap = {};
         protocols.forEach((p) => {
           const dashCat = CATEGORY_MAP[p.category];
           if (dashCat) projectCategoryMap[p.slug] = dashCat;
         });
         const raw = poolsJson.data || [];
-        const mapped = raw
+        // Filter out DeFiLlama's Morpho pools — we use our own Morpho API data
+        const defiLlamaPools = raw
           .filter((p) => {
             const cat = projectCategoryMap[p.project];
-            return cat && p.project !== "merkl" && p.tvlUsd >= 500000 && p.apy > 0 && p.apy < 200;
+            return cat && p.project !== "merkl" && !p.project.startsWith("morpho") && p.tvlUsd >= 500000 && p.apy > 0 && p.apy < 200;
           })
           .map((p) => ({
             ...p,
+            chain: chainName(p.chain),
             // Fraxlend pools are all stablecoin — DeFiLlama doesn't flag them
             stablecoin: p.project === "fraxlend" ? true : p.stablecoin,
             dashCategory: projectCategoryMap[p.project],
           }));
-        setPools(mapped);
+
+        // Map Morpho data into pool shape
+        const morphoVaultPools = mapMorphoVaults([
+          ...(morphoJson.vaults || []),
+          ...(morphoJson.vaultsV2 || []),
+        ]);
+        const morphoMarketPools = mapMorphoMarkets(morphoJson.markets || []);
+
+        const allPools = [...defiLlamaPools, ...morphoVaultPools, ...morphoMarketPools];
+        setPools(allPools);
         setLastUpdated(new Date());
         setLoading(false);
         setRefreshing(false);
+        setRefreshKey((k) => k + 1);
         setError(null);
       })
       .catch((e) => {
@@ -223,11 +295,8 @@ export function useDeFiData(selectedAsset) {
     return { protocols };
   }, [assetPools]);
 
-  // Trending: biggest APY movers for selected asset (7d change)
-  // Scored by apyPct7D × min(TVL / threshold, 1) to discount low-TVL spikes
-  // Use lower threshold for niche assets with fewer large pools
-  const TRENDING_TVL_THRESHOLD = 10_000_000;
-  const TRENDING_TVL_FLOORS = {
+  // Top yields by APY for selected asset
+  const TOP_TVL_FLOORS = {
     ETH: 10_000_000,
     BTC: 10_000_000,
     USD: 10_000_000,
@@ -236,27 +305,12 @@ export function useDeFiData(selectedAsset) {
     EUR: 2_000_000,
   };
   const trendingPools = useMemo(() => {
-    const tvlFloor = TRENDING_TVL_FLOORS[selectedAsset] || 10_000_000;
-    const tvlDenom = tvlFloor;
-    const withChange = assetPools
-      .filter((p) => p.apyPct7D != null && Math.abs(p.apyPct7D) > 0.1 && p.tvlUsd >= tvlFloor)
-      .map((p) => ({
-        ...p,
-        trendScore: Math.abs(p.apyPct7D) * Math.min(p.tvlUsd / tvlDenom, 1),
-      }));
-    const gainers = withChange
-      .filter((p) => p.apyPct7D > 0)
-      .sort((a, b) => b.trendScore - a.trendScore)
-      .slice(0, 5);
-    const losers = withChange
-      .filter((p) => p.apyPct7D < 0)
-      .sort((a, b) => b.trendScore - a.trendScore)
-      .slice(0, 5);
+    const tvlFloor = TOP_TVL_FLOORS[selectedAsset] || 10_000_000;
     const topApy = assetPools
       .filter((p) => p.tvlUsd >= tvlFloor)
       .sort((a, b) => b.apy - a.apy)
-      .slice(0, 5);
-    return { gainers, losers, topApy };
+      .slice(0, 10);
+    return { topApy };
   }, [assetPools, selectedAsset]);
 
   return {
@@ -265,6 +319,7 @@ export function useDeFiData(selectedAsset) {
     error,
     lastUpdated,
     refreshing,
+    refreshKey,
     refresh: () => fetchData(false, true),
     assetYields,
     assetPools,

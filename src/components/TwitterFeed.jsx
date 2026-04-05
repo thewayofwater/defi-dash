@@ -80,7 +80,7 @@ export default function TwitterFeed({ tweets, loading, error }) {
                 </span>
               )}
             </div>
-            <span style={{ fontSize: 10, color: "#2d3a4a", fontFamily: mono }}>
+            <span style={{ fontSize: 10, color: "#4f5e6f", fontFamily: mono }}>
               {timeAgo(t.createdAt)}
             </span>
           </div>
@@ -97,13 +97,13 @@ export default function TwitterFeed({ tweets, loading, error }) {
             {t.text}
           </div>
           <div style={{ display: "flex", gap: 14, marginTop: 6 }}>
-            <span style={{ fontSize: 10, color: "#2d3a4a", fontFamily: mono }}>
+            <span style={{ fontSize: 10, color: "#4f5e6f", fontFamily: mono }}>
               {t.metrics?.like_count || 0} likes
             </span>
-            <span style={{ fontSize: 10, color: "#2d3a4a", fontFamily: mono }}>
+            <span style={{ fontSize: 10, color: "#4f5e6f", fontFamily: mono }}>
               {t.metrics?.retweet_count || 0} rt
             </span>
-            <span style={{ fontSize: 10, color: "#2d3a4a", fontFamily: mono }}>
+            <span style={{ fontSize: 10, color: "#4f5e6f", fontFamily: mono }}>
               {t.metrics?.reply_count || 0} replies
             </span>
           </div>

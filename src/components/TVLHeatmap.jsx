@@ -9,7 +9,7 @@ const mono = "'JetBrains Mono', monospace";
 
 
 export default function TVLHeatmap({ pools, asset }) {
-  const [mode, setMode] = useState("tvl");
+  const [mode, setMode] = useState("apy");
   const [selected, setSelected] = useState(null); // { chain, category }
   const isApy = mode === "apy";
 
@@ -119,7 +119,7 @@ export default function TVLHeatmap({ pools, asset }) {
   }, [pools, selected]);
 
   const title = isApy
-    ? `${asset} Avg APY by Chain × Category`
+    ? `${asset} APY by Chain × Category`
     : `${asset} TVL Distribution by Chain × Category`;
   const subtitle = isApy
     ? `TVL-weighted average APY across ${asset} pools per chain and category`
@@ -132,8 +132,8 @@ export default function TVLHeatmap({ pools, asset }) {
       {/* Toggle */}
       <div style={{ display: "flex", gap: 4, marginBottom: 10 }}>
         {[
+          { key: "apy", label: "APY" },
           { key: "tvl", label: "TVL" },
-          { key: "apy", label: "Avg APY" },
         ].map(({ key, label }) => (
           <button
             key={key}
@@ -267,8 +267,9 @@ export default function TVLHeatmap({ pools, asset }) {
                   style={{
                     textAlign: "right",
                     padding: "8px 10px",
+                    background: getColor(row.Total),
                     borderBottom: "1px solid rgba(255,255,255,0.02)",
-                    color: "#e2e8f0",
+                    color: row.Total != null && row.Total > 0 ? "#e2e8f0" : "#1e2838",
                     fontWeight: 600,
                   }}
                 >
@@ -293,8 +294,9 @@ export default function TVLHeatmap({ pools, asset }) {
                   style={{
                     textAlign: "right",
                     padding: "8px 10px",
+                    background: getColor(totalsRow[cat]),
                     borderTop: "1px solid rgba(255,255,255,0.1)",
-                    color: CATEGORY_COLORS[cat],
+                    color: totalsRow[cat] != null && totalsRow[cat] > 0 ? CATEGORY_COLORS[cat] : "#1e2838",
                     fontWeight: 600,
                   }}
                 >
@@ -381,16 +383,19 @@ export default function TVLHeatmap({ pools, asset }) {
                 {drillPools.map((p, i) => (
                   <tr
                     key={p.pool || i}
-                    onClick={() => window.open(`https://defillama.com/yields/pool/${p.pool}`, "_blank")}
+                    onClick={() => {
+                      if (p.url) window.open(p.url, "_blank");
+                      else if (p.pool && !p.pool.startsWith("morpho-")) window.open(`https://defillama.com/yields/pool/${p.pool}`, "_blank");
+                    }}
                     style={{
                       background: i % 2 === 0 ? "rgba(255,255,255,0.01)" : "transparent",
-                      cursor: "pointer",
+                      cursor: p.url || (p.pool && !p.pool.startsWith("morpho-")) ? "pointer" : "default",
                     }}
                     onMouseEnter={(e) => e.currentTarget.style.background = "rgba(255,255,255,0.04)"}
                     onMouseLeave={(e) => e.currentTarget.style.background = i % 2 === 0 ? "rgba(255,255,255,0.01)" : "transparent"}
                   >
                     <td style={{ padding: "8px 8px", color: "#cbd5e1" }}>{p.project}</td>
-                    <td style={{ padding: "8px 8px", color: "#94a3b8" }}>{p.symbol}</td>
+                    <td style={{ padding: "8px 8px", color: "#94a3b8" }}>{p.displaySymbol || p.symbol}</td>
                     <td style={{ padding: "8px 8px", textAlign: "right", color: "#cbd5e1" }}>{fmt(p.tvlUsd)}</td>
                     <td style={{ padding: "8px 8px", textAlign: "right", color: "#22d3ee" }}>{fmtPct(p.apy)}</td>
                   </tr>

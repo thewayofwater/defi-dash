@@ -106,5 +106,5 @@ export const ASSET_COLORS = {
   USD: "#26A17B",   // Tether green
   SOL: "#9945FF",   // SOL purple
   HYPE: "#50E3C2",  // Hyperliquid teal
-  EUR: "#003399",   // EU blue
+  EUR: "#1a4fc4",   // EU blue
 };
