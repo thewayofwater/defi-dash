@@ -136,6 +136,34 @@ export default defineConfig(({ mode }) => {
         },
       },
       {
+        name: "yields-proxy",
+        configureServer(server) {
+          server.middlewares.use("/api/yields", async (req, res) => {
+            try {
+              const yieldsHandler = await import("./api/yields.js");
+              const fakeRes = {
+                statusCode: 200,
+                headers: {},
+                setHeader(k, v) { this.headers[k] = v; },
+                status(code) { this.statusCode = code; return this; },
+                json(data) {
+                  res.statusCode = this.statusCode;
+                  Object.entries(this.headers).forEach(([k, v]) => res.setHeader(k, v));
+                  res.setHeader("Content-Type", "application/json");
+                  res.end(JSON.stringify(data));
+                },
+              };
+              await yieldsHandler.default({ url: req.url || req.originalUrl }, fakeRes);
+            } catch (err) {
+              console.error("Yields proxy error:", err);
+              res.statusCode = 500;
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({ error: err.message }));
+            }
+          });
+        },
+      },
+      {
         name: "pendle-proxy",
         configureServer(server) {
           server.middlewares.use("/api/pendle", async (req, res) => {
