@@ -1,30 +1,55 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 
-const ACCOUNTS = [
-  "DefiLlama", "DeFi_Made_Here", "yieldsandmore", "phtevenstrong",
+// ─── Curated accounts: yield analysts + key protocols (trimmed to fit 512-char X API query limit) ───
+const ANALYSTS = [
+  "DeFi_Made_Here", "0xHamz", "0xtindorr", "phtevenstrong", "yieldsandmore",
+  "DefiIgnas", "Route2FI", "sassal0x", "nomaticcap",
+];
+const PROTOCOLS = [
   "AaveAave", "MorphoLabs", "0xfluid", "LidoFinance",
-  "CurveFinance", "pendle_fi", "pendleintern", "yearnfi",
-  "EthenaLabs", "HyperliquidX", "JitoLabs", "stakedaohq",
-  "sassal0x", "0xHamz", "eigenlayer", "0xtindorr", "originprotocol",
+  "pendle_fi", "pendleintern", "yearnfi",
+  "EthenaLabs", "HyperliquidX", "originprotocol",
+];
+const AGGREGATORS = [
+  "DefiLlama",
 ];
 
-const FROM_CLAUSE = ACCOUNTS.map((a) => `from:${a}`).join(" OR ");
+const ALL_ACCOUNTS = [...ANALYSTS, ...PROTOCOLS, ...AGGREGATORS];
+const FROM_CLAUSE = ALL_ACCOUNTS.map((a) => `from:${a}`).join(" OR ");
+const ANALYST_SET = new Set(ANALYSTS.map((a) => a.toLowerCase()));
+
+// ─── Asset-specific queries — require yield context, avoid bare token name matches ───
+const YIELD_CONTEXT = "(yield OR APY OR APR OR earn OR vault OR bps)";
 const ASSET_QUERIES = {
-  ETH: '("ETH yield" OR "ETH yields" OR "ETH APY" OR "ETH staking" OR stETH OR wstETH OR rETH)',
-  BTC: '("BTC yield" OR "BTC yields" OR "BTC APY" OR "BTC staking" OR WBTC OR cbBTC)',
-  USD: '("stablecoin yield" OR "USDC yield" OR "USDT yield" OR "USDC APY" OR "USDT APY" OR USDe)',
-  SOL: '("SOL yield" OR "SOL yields" OR "SOL APY" OR "SOL staking" OR mSOL OR jitoSOL)',
-  HYPE: '("HYPE yield" OR "HYPE APY" OR "HYPE staking" OR sHYPE)',
-  EUR: '("EUR yield" OR "EUR APY" OR EURE OR EURC)',
+  ETH: `(ETH OR stETH OR wstETH OR rETH OR eETH) ${YIELD_CONTEXT}`,
+  BTC: `(BTC OR WBTC OR cbBTC OR tBTC OR LBTC) ${YIELD_CONTEXT}`,
+  USD: `(USDC OR USDT OR DAI OR sDAI OR USDe OR sUSDe OR GHO) ${YIELD_CONTEXT}`,
+  SOL: `(SOL OR mSOL OR jitoSOL OR bSOL) ${YIELD_CONTEXT}`,
+  HYPE: `(HYPE OR sHYPE OR HLP) ${YIELD_CONTEXT}`,
+  EUR: `(EUR OR EURE OR EURC OR agEUR) ${YIELD_CONTEXT}`,
 };
+
+// ─── Category detection ───
+function categorize(text) {
+  // YIELD ALERT: mentions a percentage alongside yield keywords
+  if (/\b(apy|apr|yield|earn|reward|basis point|bps)\b/i.test(text) && /\d+\.?\d*\s*%|\d+\s*bps/i.test(text)) return "YIELD ALERT";
+  if (/\d+\.?\d*\s*%/.test(text) && /\b(apy|apr|yield|earn)\b/i.test(text)) return "YIELD ALERT";
+  // NEW POOL
+  if (/\b(launch|live now|new (pool|vault|market|strategy)|just deployed|now available|listing|onboard)/i.test(text)) return "NEW POOL";
+  // RISK
+  if (/\b(depeg|exploit|hack|vulnerability|liquidat|bad debt|pause|emergency|risk|warning|caution)\b/i.test(text)) return "RISK";
+  // ANALYSIS
+  if (/\b(thread|breakdown|deep dive|analysis|compared?|versus|vs\.|overview|report|research|data shows)\b/i.test(text)) return "ANALYSIS";
+  return "PROTOCOL UPDATE";
+}
 
 function buildQuery(asset) {
   const assetQ = ASSET_QUERIES[asset];
   if (assetQ) {
     return `(${FROM_CLAUSE}) ${assetQ} -is:retweet lang:en`;
   }
-  return `(${FROM_CLAUSE}) (yield OR APY OR APR OR staking OR lending OR TVL) -is:retweet lang:en`;
+  return `(${FROM_CLAUSE}) (yield OR APY OR APR OR rate OR vault OR staking OR lending OR TVL OR reward) -is:retweet lang:en`;
 }
 
 export default defineConfig(({ mode }) => {
@@ -48,8 +73,13 @@ export default defineConfig(({ mode }) => {
             const asset = (url.searchParams.get("asset") || "ETH").toUpperCase();
             const query = buildQuery(asset);
 
+            // X API query max is 512 chars — if too long, drop asset keywords
+            const finalQuery = query.length <= 512
+              ? query
+              : `(${FROM_CLAUSE}) (yield OR APY OR APR OR rate OR vault OR staking OR lending) -is:retweet lang:en`;
+
             const params = new URLSearchParams({
-              query,
+              query: finalQuery,
               max_results: "10",
               "tweet.fields": "created_at,public_metrics,author_id",
               expansions: "author_id",
@@ -76,14 +106,17 @@ export default defineConfig(({ mode }) => {
 
               const tweets = (data.data || []).map((t) => {
                 const author = users[t.author_id] || {};
+                const username = author.username || "";
                 return {
                   id: t.id,
                   text: t.text,
                   createdAt: t.created_at,
                   metrics: t.public_metrics,
+                  category: categorize(t.text),
+                  authorType: ANALYST_SET.has(username.toLowerCase()) ? "analyst" : "protocol",
                   author: {
                     name: author.name,
-                    username: author.username,
+                    username,
                     profileImage: author.profile_image_url,
                     followers: author.public_metrics?.followers_count || 0,
                   },
@@ -156,6 +189,34 @@ export default defineConfig(({ mode }) => {
               await yieldsHandler.default({ url: req.url || req.originalUrl }, fakeRes);
             } catch (err) {
               console.error("Yields proxy error:", err);
+              res.statusCode = 500;
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({ error: err.message }));
+            }
+          });
+        },
+      },
+      {
+        name: "aave-proxy",
+        configureServer(server) {
+          server.middlewares.use("/api/aave", async (req, res) => {
+            try {
+              const aaveHandler = await import("./api/aave.js");
+              const fakeRes = {
+                statusCode: 200,
+                headers: {},
+                setHeader(k, v) { this.headers[k] = v; },
+                status(code) { this.statusCode = code; return this; },
+                json(data) {
+                  res.statusCode = this.statusCode;
+                  Object.entries(this.headers).forEach(([k, v]) => res.setHeader(k, v));
+                  res.setHeader("Content-Type", "application/json");
+                  res.end(JSON.stringify(data));
+                },
+              };
+              await aaveHandler.default(req, fakeRes);
+            } catch (err) {
+              console.error("Aave proxy error:", err);
               res.statusCode = 500;
               res.setHeader("Content-Type", "application/json");
               res.end(JSON.stringify({ error: err.message }));

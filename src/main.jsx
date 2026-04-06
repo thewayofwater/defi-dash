@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import App from "./App";
+import AavePage from "./pages/AavePage";
 import MorphoPage from "./pages/MorphoPage";
 import PendlePage from "./pages/PendlePage";
 import ComparePage from "./pages/ComparePage";
@@ -14,6 +15,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
       <div style={{ marginLeft: COLLAPSED_W }}>
         <Routes>
           <Route path="/" element={<App />} />
+          <Route path="/aave" element={<AavePage />} />
           <Route path="/morpho" element={<MorphoPage />} />
           <Route path="/pendle" element={<PendlePage />} />
           <Route path="/compare" element={<ComparePage />} />

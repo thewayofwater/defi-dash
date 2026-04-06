@@ -9,13 +9,13 @@ import { SectionHeader, LoadingSpinner, ModuleCard, ChartShimmer } from "../comp
 const mono = "'JetBrains Mono', monospace";
 
 const TAB_STYLE = (active) => ({
-  background: active ? "rgba(168,85,247,0.12)" : "rgba(255,255,255,0.025)",
-  border: active ? "1px solid rgba(168,85,247,0.3)" : "1px solid rgba(255,255,255,0.05)",
+  background: active ? "rgba(59,130,246,0.12)" : "rgba(255,255,255,0.025)",
+  border: active ? "1px solid rgba(59,130,246,0.3)" : "1px solid rgba(255,255,255,0.05)",
   borderRadius: 5,
   padding: "7px 16px",
   fontSize: 10,
   fontFamily: mono,
-  color: active ? "#a855f7" : "#6b7a8d",
+  color: active ? "#3b82f6" : "#6b7a8d",
   cursor: "pointer",
   letterSpacing: 0.5,
   fontWeight: active ? 600 : 400,
@@ -433,8 +433,8 @@ function ProtocolTvlChart({ history }) {
       <AreaChart data={data} margin={{ left: 10, right: 20, top: 5, bottom: 5 }}>
         <defs>
           <linearGradient id="tvlGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#a855f7" stopOpacity={0.3} />
-            <stop offset="100%" stopColor="#a855f7" stopOpacity={0} />
+            <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.3} />
+            <stop offset="100%" stopColor="#3b82f6" stopOpacity={0} />
           </linearGradient>
           <linearGradient id="supplyGrad" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="#22d3ee" stopOpacity={0.2} />
@@ -452,7 +452,7 @@ function ProtocolTvlChart({ history }) {
           formatter={(value) => value === "tvl" ? "TVL" : value === "supply" ? "Supply" : "Borrow"}
           wrapperStyle={{ fontSize: 10, fontFamily: mono, color: "#94a3b8" }}
         />
-        <Area type="monotone" dataKey="tvl" stroke="#a855f7" fill="url(#tvlGrad)" strokeWidth={2} dot={false} />
+        <Area type="monotone" dataKey="tvl" stroke="#3b82f6" fill="url(#tvlGrad)" strokeWidth={2} dot={false} />
         <Area type="monotone" dataKey="supply" stroke="#22d3ee" fill="url(#supplyGrad)" strokeWidth={1.5} dot={false} />
         <Area type="monotone" dataKey="borrow" stroke="#f87171" fill="url(#borrowGrad)" strokeWidth={1.5} dot={false} />
       </AreaChart>
@@ -965,6 +965,23 @@ export default function MorphoPage() {
     return { totalTvl, totalVaultTvl, totalV2Tvl, totalMarketSupply, totalMarketBorrow };
   }, [vaults, vaultsV2, history]);
 
+  // Weighted avg supply & borrow rates for key assets (across markets)
+  const assetRates = useMemo(() => {
+    const KEY_ASSETS = ["USDC", "USDT", "WETH"];
+    return KEY_ASSETS.map((sym) => {
+      const matched = markets.filter((m) => (m.loanAsset || "").toUpperCase() === sym);
+      const totalSupply = matched.reduce((s, m) => s + (m.supplyUsd || 0), 0);
+      const totalBorrow = matched.reduce((s, m) => s + (m.borrowUsd || 0), 0);
+      const avgSupplyApy = totalSupply > 0
+        ? matched.reduce((s, m) => s + (m.supplyApy || 0) * (m.supplyUsd || 0), 0) / totalSupply
+        : 0;
+      const avgBorrowApy = totalBorrow > 0
+        ? matched.reduce((s, m) => s + (m.borrowApy || 0) * (m.borrowUsd || 0), 0) / totalBorrow
+        : 0;
+      return { symbol: sym, avgSupplyApy, avgBorrowApy, totalSupply, totalBorrow, marketCount: matched.length };
+    });
+  }, [markets]);
+
   if (error) {
     return (
       <div style={{ background: "#0a0e17", color: "#f87171", padding: 40, fontFamily: mono, textAlign: "center", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -996,7 +1013,7 @@ export default function MorphoPage() {
           <div>
             <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, color: "#f1f5f9", letterSpacing: "-0.02em" }}>
               Morpho
-              <span style={{ color: "#a855f7", marginLeft: 8, fontSize: 10, fontWeight: 500, fontFamily: mono, verticalAlign: "middle", background: "rgba(168,85,247,0.07)", padding: "2px 7px", borderRadius: 3, letterSpacing: 1 }}>
+              <span style={{ color: "#3b82f6", marginLeft: 8, fontSize: 10, fontWeight: 500, fontFamily: mono, verticalAlign: "middle", background: "rgba(59,130,246,0.07)", padding: "2px 7px", borderRadius: 3, letterSpacing: 1 }}>
                 PROTOCOL
               </span>
             </h1>
@@ -1009,7 +1026,7 @@ export default function MorphoPage() {
             onClick={refresh}
             disabled={refreshing}
             style={{
-              background: refreshing ? "rgba(168,85,247,0.15)" : "rgba(255,255,255,0.04)",
+              background: refreshing ? "rgba(59,130,246,0.15)" : "rgba(255,255,255,0.04)",
               border: "1px solid rgba(255,255,255,0.08)",
               borderRadius: 6,
               padding: "7px 14px",
@@ -1029,28 +1046,23 @@ export default function MorphoPage() {
           </button>
         </div>
 
-        {/* Stats hero + grid */}
-        <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
-          {/* Hero TVL card */}
+        {/* Row 1: Hero TVL + protocol stats — 3-column grid aligned with Row 2 */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginTop: 14 }}>
           <div style={{
-            background: "rgba(168,85,247,0.06)",
-            border: "1px solid rgba(168,85,247,0.15)",
+            background: "rgba(59,130,246,0.06)",
+            border: "1px solid rgba(59,130,246,0.15)",
             borderRadius: 6,
             padding: "20px 24px",
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-            justifyContent: "center",
             position: "relative",
             overflow: "hidden",
           }}>
-            {refreshing && <div style={{ position: "absolute", inset: 0, background: "linear-gradient(90deg, transparent 0%, rgba(168,85,247,0.08) 40%, rgba(168,85,247,0.12) 50%, rgba(168,85,247,0.08) 60%, transparent 100%)", backgroundSize: "200% 100%", animation: "shimmer 1.5s ease-in-out infinite" }} />}
-            <div style={{ fontSize: 11, color: "#a855f7", fontFamily: mono, letterSpacing: 1, textTransform: "uppercase" }}>Total Value Locked</div>
-            <div style={{ fontSize: 32, fontWeight: 700, color: "#e2e8f0", fontFamily: mono, marginTop: 4 }}>{fmt(stats.totalTvl)}</div>
+            {refreshing && <div style={{ position: "absolute", inset: 0, background: "linear-gradient(90deg, transparent 0%, rgba(59,130,246,0.08) 40%, rgba(59,130,246,0.12) 50%, rgba(59,130,246,0.08) 60%, transparent 100%)", backgroundSize: "200% 100%", animation: "shimmer 1.5s ease-in-out infinite" }} />}
+            <div style={{ fontSize: 11, color: "#3b82f6", fontFamily: mono, letterSpacing: 1, textTransform: "uppercase" }}>Total Value Locked</div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: "#e2e8f0", fontFamily: mono, marginTop: 4 }}>{fmt(stats.totalTvl)}</div>
             <div style={{ fontSize: 11, color: "#6b7a8d", fontFamily: mono, marginTop: 2 }}>protocol-wide</div>
           </div>
-          {/* 2×2 grid */}
-          <div style={{ flex: 2, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          {/* 2×2 sub-grid spanning 2 columns */}
+          <div style={{ gridColumn: "span 2", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
             {[
               { label: "V1 Vaults", value: fmt(stats.totalVaultTvl), sub: `${vaults.length} vaults` },
               { label: "V2 Vaults", value: fmt(stats.totalV2Tvl), sub: `${vaultsV2.length} vaults` },
@@ -1065,6 +1077,29 @@ export default function MorphoPage() {
               </div>
             ))}
           </div>
+        </div>
+
+        {/* Row 2: Weighted avg rates for key assets */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginTop: 10 }}>
+          {assetRates.map((a) => (
+            <div key={a.symbol} style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 6, padding: "12px 16px", position: "relative", overflow: "hidden" }}>
+              {refreshing && <div style={{ position: "absolute", inset: 0, background: "linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.04) 40%, rgba(255,255,255,0.06) 50%, rgba(255,255,255,0.04) 60%, transparent 100%)", backgroundSize: "200% 100%", animation: "shimmer 1.5s ease-in-out infinite" }} />}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "#e2e8f0", fontFamily: mono }}>{a.symbol}</div>
+                <div style={{ fontSize: 9, color: "#4f5e6f", fontFamily: mono }}>{a.marketCount} markets · wt avg</div>
+              </div>
+              <div style={{ display: "flex", gap: 16, marginTop: 8 }}>
+                <div>
+                  <div style={{ fontSize: 9, color: "#4ade80", fontFamily: mono, textTransform: "uppercase", letterSpacing: 0.5 }}>Supply APY</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: "#4ade80", fontFamily: mono, marginTop: 2 }}>{fmtPct(a.avgSupplyApy)}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 9, color: "#f87171", fontFamily: mono, textTransform: "uppercase", letterSpacing: 0.5 }}>Borrow APY</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: "#f87171", fontFamily: mono, marginTop: 2 }}>{fmtPct(a.avgBorrowApy)}</div>
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
 
       </div>
