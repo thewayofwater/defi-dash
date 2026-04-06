@@ -20,6 +20,7 @@ async function fetchGql(query) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query }),
+    signal: AbortSignal.timeout(8000),
   });
   if (!resp.ok) throw new Error(`Aave GQL ${resp.status}`);
   return resp.json();
@@ -60,17 +61,16 @@ async function fetchV4Data() {
     }
   }`).catch(() => ({ data: { reserves: [] } }));
 
-  // Build hub lookup by spoke ID
+  // Build hub lookup by spoke ID (parallel)
   const spokeToHub = {};
-  for (const hub of hubs) {
-    // Fetch spokes for this hub
+  await Promise.all(hubs.map(async (hub) => {
     const spokesRes = await fetchGql(`{
       spokes(request: { query: { hubId: "${hub.id}" } }) { id name }
     }`).catch(() => ({ data: { spokes: [] } }));
     for (const spoke of (spokesRes.data?.spokes || [])) {
       spokeToHub[spoke.id] = { hubId: hub.id, hubName: hub.name };
     }
-  }
+  }));
 
   // Get protocol history
   const historyRes = await fetchGql(`{
