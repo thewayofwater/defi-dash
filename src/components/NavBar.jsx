@@ -141,6 +141,7 @@ export default function NavBar() {
 
         {sectionLabel("Tools")}
         {navLink("/compare", "Compare", "⇄")}
+        {navLink("/portfolio", "Portfolio", "◎")}
       </div>
     </nav>
   );

@@ -4,15 +4,19 @@ const DEFILLAMA_PROTOCOLS = "https://api.llama.fi/protocols";
 
 // Protocols we compare across
 const TARGET_PROJECTS = [
-  "morpho-v1", "pendle", "aave-v3", "aave-v2",
-  "compound-v3", "lido", "spark", "ethena",
-  "maker", "sky", "fluid", "euler",
-  "yearn-finance", "convex-finance", "curve-dex",
-  // Solana protocols
+  // Core lending
+  "morpho-v1", "aave-v3", "aave-v4", "compound-v3",
+  "sparklend", "fluid-lending", "euler-v2",
+  "maple", "venus-core-pool",
+  // Yield / stablecoins
+  "pendle", "yearn-finance", "convex-finance", "curve-dex",
+  "ethena-usde", "sky-lending", "spark-savings",
+  "ether.fi-liquid", "lido",
+  // Solana
   "jito-liquid-staking", "marinade-liquid-staking", "jupiter-lend",
   "kamino-lend", "drift-staked-sol",
   // HyperEVM
-  "hyperlend",
+  "hyperlend-pooled",
 ];
 
 // Per-token matchers — checks if a single token belongs to an asset class
@@ -69,28 +73,33 @@ function normalizeSymbol(sym, stablecoin, exposure) {
 function projectLabel(project) {
   const labels = {
     "morpho-v1": "Morpho",
-    "pendle": "Pendle",
-    "aave-v3": "Aave v3",
-    "aave-v2": "Aave v2",
+    "aave-v3": "Aave V3",
+    "aave-v4": "Aave V4",
     "compound-v3": "Compound",
-    "lido": "Lido",
-    "spark": "Spark",
-    "ethena": "Ethena",
-    "maker": "Maker",
-    "sky": "Sky",
-    "fluid": "Fluid",
-    "euler": "Euler",
+    "sparklend": "Spark",
+    "fluid-lending": "Fluid",
+    "euler-v2": "Euler",
+    "maple": "Maple",
+    "venus-core-pool": "Venus",
+    "pendle": "Pendle",
     "yearn-finance": "Yearn",
     "convex-finance": "Convex",
     "curve-dex": "Curve",
+    "ethena-usde": "Ethena",
+    "sky-lending": "Sky",
+    "spark-savings": "Spark Savings",
+    "ether.fi-liquid": "Ether.fi",
+    "lido": "Lido",
     "jito-liquid-staking": "Jito",
     "marinade-liquid-staking": "Marinade",
     "jupiter-lend": "Jupiter",
     "kamino-lend": "Kamino",
     "drift-staked-sol": "Drift",
-    "hyperlend": "HyperLend",
+    "hyperlend-pooled": "HyperLend",
   };
-  return labels[project] || project;
+  if (labels[project]) return labels[project];
+  // Auto-format unknown project slugs: "some-protocol-v2" → "Some Protocol V2"
+  return project.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 // Map DeFiLlama protocol categories to dashboard categories (matches overview page)
@@ -141,6 +150,7 @@ export default async function handler(req, res) {
 
   const url = new URL(req.url, "http://localhost");
   const chartPool = url.searchParams.get("chart");
+  const mode = url.searchParams.get("mode"); // "all" = full universe for portfolio builder
 
   // If ?chart=<poolId>, return historical data for that pool
   if (chartPool) {
@@ -179,11 +189,14 @@ export default async function handler(req, res) {
       });
     }
 
-    // Filter to target protocols with meaningful TVL
+    // Filter pools based on mode
+    const EXCLUDED_PROJECTS = ["merkl"];
     const pools = allPools
-      .filter((p) => TARGET_PROJECTS.includes(p.project))
+      .filter((p) => mode === "all"
+        ? !EXCLUDED_PROJECTS.includes(p.project)
+        : TARGET_PROJECTS.includes(p.project))
       .filter((p) => (p.tvlUsd || 0) >= 1000000) // min $1M TVL
-      .filter((p) => p.apy != null && p.apy > 0.01)
+      .filter((p) => p.apy != null && p.apy > 0.01 && p.apy < 100)
       .map((p) => {
         const baseAsset = normalizeSymbol(p.symbol, p.stablecoin, p.exposure);
         // Normalize chain names to match other pages
@@ -207,6 +220,7 @@ export default async function handler(req, res) {
           stablecoin: p.stablecoin || false,
           ilRisk: p.ilRisk || "no",
           exposure: p.exposure || "single",
+          poolMeta: p.poolMeta || null,
           prediction: p.predictions?.predictedClass || null,
         };
       })

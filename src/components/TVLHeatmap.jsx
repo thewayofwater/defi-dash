@@ -395,7 +395,15 @@ export default function TVLHeatmap({ pools, asset }) {
                     onMouseLeave={(e) => e.currentTarget.style.background = i % 2 === 0 ? "rgba(255,255,255,0.01)" : "transparent"}
                   >
                     <td style={{ padding: "8px 8px", color: "#cbd5e1" }}>{p.project}</td>
-                    <td style={{ padding: "8px 8px", color: "#94a3b8" }}>{p.displaySymbol || p.symbol}</td>
+                    <td style={{ padding: "8px 8px", color: "#94a3b8" }}>
+                      {p.displaySymbol || p.symbol}
+                      {p.poolMeta && p.poolMeta.startsWith("For buying PT") && (
+                        <span style={{ marginLeft: 5, fontSize: 8, fontFamily: mono, color: "#a78bfa", background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.2)", padding: "1px 4px", borderRadius: 2, verticalAlign: "middle" }}>PT</span>
+                      )}
+                      {p.poolMeta && p.poolMeta.startsWith("For LP") && (
+                        <span style={{ marginLeft: 5, fontSize: 8, fontFamily: mono, color: "#38bdf8", background: "rgba(56,189,248,0.1)", border: "1px solid rgba(56,189,248,0.2)", padding: "1px 4px", borderRadius: 2, verticalAlign: "middle" }}>LP</span>
+                      )}
+                    </td>
                     <td style={{ padding: "8px 8px", textAlign: "right", color: "#cbd5e1" }}>{fmt(p.tvlUsd)}</td>
                     <td style={{ padding: "8px 8px", textAlign: "right", color: "#22d3ee" }}>{fmtPct(p.apy)}</td>
                   </tr>

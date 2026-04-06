@@ -146,7 +146,7 @@ function YieldHistoryPanel({ selectedPools, allPools, onClear }) {
             const color = CATEGORY_COLORS[pool.category] || "#94a3b8";
             return (
               <span key={id} style={{ fontSize: 10, fontFamily: mono, color, background: `${color}15`, padding: "2px 8px", borderRadius: 3 }}>
-                {pool.project} — {pool.symbol} ({pool.chain})
+                {pool.project} — {pool.symbol}{pool.poolMeta && pool.poolMeta.startsWith("For buying PT") ? " PT" : pool.poolMeta && pool.poolMeta.startsWith("For LP") ? " LP" : ""} ({pool.chain})
               </span>
             );
           })}
@@ -285,7 +285,8 @@ function ApyByProtocol({ pools }) {
         const cat = primaryCategory(pools, project);
         return { project, apy: weightedApy, tvl: totalTvl, pools: apys.length, category: cat };
       })
-      .sort((a, b) => b.apy - a.apy);
+      .sort((a, b) => b.apy - a.apy)
+      .slice(0, 10);
   }, [pools]);
 
   return (
@@ -324,7 +325,8 @@ function TvlByProtocol({ pools }) {
         const cat = primaryCategory(pools, project);
         return { project, tvl, category: cat };
       })
-      .sort((a, b) => b.tvl - a.tvl);
+      .sort((a, b) => b.tvl - a.tvl)
+      .slice(0, 10);
   }, [pools]);
 
   return (
@@ -415,6 +417,8 @@ function RiskReturnScatter({ pools }) {
         <YAxis
           dataKey="apyDisplay"
           type="number"
+          domain={[0, (dataMax) => { const lastTick = Math.ceil(dataMax / 5) * 5; return lastTick + 2; }]}
+          ticks={(() => { const max = Math.max(...(scatterData.map(d => d.apyDisplay) || [10])); const lastTick = Math.ceil(max / 5) * 5; const t = []; for (let i = 0; i <= lastTick; i += 5) t.push(i); return t; })()}
           tick={{ fill: "#4a5568", fontSize: 10, fontFamily: mono }}
           tickFormatter={(v) => `${v.toFixed(0)}%`}
           axisLine={false}
@@ -590,7 +594,15 @@ function ComparisonTable({ pools, selectedPools, onTogglePool }) {
                       {isSelected ? "✓" : ""}
                     </div>
                   </td>
-                  <td style={{ ...TD, color: "#cbd5e1", fontWeight: 500 }}>{p.symbol}</td>
+                  <td style={{ ...TD, color: "#cbd5e1", fontWeight: 500 }}>
+                    {p.symbol}
+                    {p.poolMeta && p.poolMeta.startsWith("For buying PT") && (
+                      <span style={{ marginLeft: 5, fontSize: 8, fontFamily: mono, color: "#a78bfa", background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.2)", padding: "1px 4px", borderRadius: 2, verticalAlign: "middle" }}>PT</span>
+                    )}
+                    {p.poolMeta && p.poolMeta.startsWith("For LP") && (
+                      <span style={{ marginLeft: 5, fontSize: 8, fontFamily: mono, color: "#38bdf8", background: "rgba(56,189,248,0.1)", border: "1px solid rgba(56,189,248,0.2)", padding: "1px 4px", borderRadius: 2, verticalAlign: "middle" }}>LP</span>
+                    )}
+                  </td>
                   <td style={TD_DIM}>{p.project}</td>
                   <td style={TD}>
                     {p.category ? (
@@ -683,7 +695,7 @@ export default function ComparePage() {
             <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, color: "#f1f5f9", letterSpacing: "-0.02em" }}>
               Yield Comparison
               <span style={{ color: "#22d3ee", marginLeft: 8, fontSize: 10, fontWeight: 500, fontFamily: mono, verticalAlign: "middle", background: "rgba(34,211,238,0.07)", padding: "2px 7px", borderRadius: 3, letterSpacing: 1 }}>
-                CROSS-PROTOCOL
+                TOOL
               </span>
             </h1>
             <div style={{ fontSize: 12, color: "#4f5e6f", marginTop: 2, fontFamily: mono }}>
@@ -723,6 +735,17 @@ export default function ComparePage() {
           <StatCard label="Avg APY (TVL-weighted)" value={`${stats.avgApy.toFixed(2)}%`} color="#22d3ee" />
           <StatCard label="Best APY" value={`${stats.maxApy.toFixed(2)}%`} color="#34d399" />
           <StatCard label="Protocols" value={stats.protocols} />
+        </div>
+
+        {/* Category legend */}
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ fontSize: 10, fontFamily: mono, color: "#4a5568", letterSpacing: 0.8, textTransform: "uppercase" }}>Category</span>
+          {Object.entries(CATEGORY_COLORS).map(([cat, color]) => (
+            <div key={cat} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <div style={{ width: 8, height: 8, borderRadius: 2, background: color, opacity: 0.8 }} />
+              <span style={{ fontSize: 10, fontFamily: mono, color: "#94a3b8" }}>{cat}</span>
+            </div>
+          ))}
         </div>
 
         {/* Charts row */}

@@ -18,7 +18,11 @@ const STABLECOIN_SYMBOLS = new Set([
 
 function isStablecoinAsset(symbol) {
   if (!symbol) return false;
-  return STABLECOIN_SYMBOLS.has(symbol.toUpperCase());
+  const upper = symbol.toUpperCase();
+  if (STABLECOIN_SYMBOLS.has(upper)) return true;
+  // Substring fallback — any token with "USD" or "DAI" in the name is USD-denominated
+  if (upper.includes("USD") || upper.includes("DAI")) return true;
+  return false;
 }
 
 // Per-token matchers for checking individual tokens in a symbol

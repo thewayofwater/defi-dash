@@ -60,6 +60,12 @@ export default function TrendingYields({ trending, asset }) {
             </td>
             <td style={{ ...truncCell, padding: "8px 6px", color: "#cbd5e1" }} title={p.displaySymbol || p.symbol}>
               {p.displaySymbol || p.symbol}
+              {p.poolMeta && p.poolMeta.startsWith("For buying PT") && (
+                <span style={{ marginLeft: 5, fontSize: 8, fontFamily: mono, color: "#a78bfa", background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.2)", padding: "1px 4px", borderRadius: 2, verticalAlign: "middle" }}>PT</span>
+              )}
+              {p.poolMeta && p.poolMeta.startsWith("For LP") && (
+                <span style={{ marginLeft: 5, fontSize: 8, fontFamily: mono, color: "#38bdf8", background: "rgba(56,189,248,0.1)", border: "1px solid rgba(56,189,248,0.2)", padding: "1px 4px", borderRadius: 2, verticalAlign: "middle" }}>LP</span>
+              )}
             </td>
             <td style={{ ...truncCell, padding: "8px 6px", color: "#94a3b8" }}>
               {chainName(p.chain)}

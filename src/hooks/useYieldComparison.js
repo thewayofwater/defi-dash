@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 
 const YIELDS_URL = "/api/yields";
 
-export function useYieldComparison() {
+export function useYieldComparison({ mode } = {}) {
   const [pools, setPools] = useState([]);
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -14,7 +14,7 @@ export function useYieldComparison() {
   const fetchData = useCallback((isInitial = false) => {
     if (isInitial) setLoading(true);
     else setRefreshing(true);
-    fetch(YIELDS_URL)
+    fetch(mode ? `${YIELDS_URL}?mode=${mode}` : YIELDS_URL)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
@@ -33,7 +33,7 @@ export function useYieldComparison() {
         setLoading(false);
         setRefreshing(false);
       });
-  }, []);
+  }, [mode]);
 
   useEffect(() => {
     fetchData(true);

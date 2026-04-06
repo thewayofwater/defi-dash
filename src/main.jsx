@@ -6,6 +6,7 @@ import AavePage from "./pages/AavePage";
 import MorphoPage from "./pages/MorphoPage";
 import PendlePage from "./pages/PendlePage";
 import ComparePage from "./pages/ComparePage";
+import PortfolioPage from "./pages/PortfolioPage";
 import NavBar, { COLLAPSED_W } from "./components/NavBar";
 
 ReactDOM.createRoot(document.getElementById("root")).render(
@@ -19,6 +20,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
           <Route path="/morpho" element={<MorphoPage />} />
           <Route path="/pendle" element={<PendlePage />} />
           <Route path="/compare" element={<ComparePage />} />
+          <Route path="/portfolio" element={<PortfolioPage />} />
         </Routes>
       </div>
     </BrowserRouter>

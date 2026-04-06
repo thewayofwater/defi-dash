@@ -186,7 +186,7 @@ export default defineConfig(({ mode }) => {
                   res.end(JSON.stringify(data));
                 },
               };
-              await yieldsHandler.default({ url: req.url || req.originalUrl }, fakeRes);
+              await yieldsHandler.default({ url: req.originalUrl || req.url }, fakeRes);
             } catch (err) {
               console.error("Yields proxy error:", err);
               res.statusCode = 500;
