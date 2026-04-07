@@ -252,6 +252,34 @@ export default defineConfig(({ mode }) => {
           });
         },
       },
+      {
+        name: "maple-proxy",
+        configureServer(server) {
+          server.middlewares.use("/api/maple", async (req, res) => {
+            try {
+              const mapleHandler = await import("./api/maple.js");
+              const fakeRes = {
+                statusCode: 200,
+                headers: {},
+                setHeader(k, v) { this.headers[k] = v; },
+                status(code) { this.statusCode = code; return this; },
+                json(data) {
+                  res.statusCode = this.statusCode;
+                  Object.entries(this.headers).forEach(([k, v]) => res.setHeader(k, v));
+                  res.setHeader("Content-Type", "application/json");
+                  res.end(JSON.stringify(data));
+                },
+              };
+              await mapleHandler.default(req, fakeRes);
+            } catch (err) {
+              console.error("Maple proxy error:", err);
+              res.statusCode = 500;
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({ error: err.message }));
+            }
+          });
+        },
+      },
     ],
   };
 });

@@ -572,7 +572,7 @@ export default function PendlePage() {
         </div>
 
         {/* Stats hero + grid */}
-        <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+        <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
           {/* Hero TVL card */}
           <div style={{
             background: "rgba(52,211,153,0.06)",

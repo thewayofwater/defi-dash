@@ -878,7 +878,7 @@ export default function AavePage() {
                 <div style={{ fontSize: 12, fontWeight: 600, color: "#e2e8f0", fontFamily: mono }}>{a.symbol}</div>
                 <div style={{ fontSize: 9, color: "#4f5e6f", fontFamily: mono }}>{a.poolCount} pools · wt avg</div>
               </div>
-              <div style={{ display: "flex", gap: 16, marginTop: 8 }}>
+              <div style={{ display: "flex", gap: 16, marginTop: 8, flexWrap: "wrap" }}>
                 <div>
                   <div style={{ fontSize: 9, color: "#4ade80", fontFamily: mono, textTransform: "uppercase", letterSpacing: 0.5 }}>Supply APY</div>
                   <div style={{ fontSize: 20, fontWeight: 700, color: "#4ade80", fontFamily: mono, marginTop: 2 }}>{fmtPct(a.avgSupplyApy)}</div>
