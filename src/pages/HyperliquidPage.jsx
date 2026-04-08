@@ -63,11 +63,6 @@ export default function HyperliquidPage() {
     return series.map((d) => ({ date: formatTs(d.date), value: d.value }));
   }, [ts, periodKey, period, ytdStart]);
 
-  const drawdownChart = useMemo(() => {
-    const series = ts.allTime?.drawdown || [];
-    return series.map((d) => ({ date: formatTs(d.date), drawdown: d.drawdown }));
-  }, [ts]);
-
   // Monthly returns: years as rows, months as columns
   const { years: yearsList, yearlyTotals } = useMemo(() => {
     if (!data?.monthlyReturns) return { years: [], yearlyTotals: {} };
@@ -335,45 +330,18 @@ export default function HyperliquidPage() {
           </ModuleCard>
         )}
 
-        {/* Drawdown — always All-Time, full width */}
-        {drawdownChart.length > 0 && (
-          <ModuleCard>
-            <SectionHeader title="Drawdown" subtitle="All-time NAV peak-to-trough decline (net of deposits/withdrawals)" />
-            {refreshing ? <ChartShimmer height={280} /> : (
-              <div key={refreshKey}>
-                <ResponsiveContainer width="100%" height={280}>
-                  <AreaChart data={drawdownChart} margin={{ left: 10, right: 20, top: 5, bottom: 5 }}>
-                    <defs>
-                      <linearGradient id="hlpDdGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#f87171" stopOpacity={0} />
-                        <stop offset="100%" stopColor="#f87171" stopOpacity={0.2} />
-                      </linearGradient>
-                    </defs>
-                    <XAxis dataKey="date" tick={{ fill: "#6b7a8d", fontSize: 10, fontFamily: mono }} axisLine={false} tickLine={false} interval={Math.floor(drawdownChart.length / 5)} tickFormatter={(v) => v.slice(5)} />
-                    <YAxis tickFormatter={(v) => `${v.toFixed(0)}%`} tick={{ fill: "#6b7a8d", fontSize: 10, fontFamily: mono }} axisLine={false} tickLine={false} domain={["dataMin", 0]} />
-                    <Tooltip {...chartTooltipStyle} formatter={(v) => [`${v.toFixed(2)}%`, "Drawdown"]} labelFormatter={(v) => v} />
-                    <Area type="monotone" dataKey="drawdown" stroke="#f87171" fill="url(#hlpDdGrad)" strokeWidth={2} dot={false} />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </ModuleCard>
-        )}
 
         {/* Risk Metrics */}
         <ModuleCard>
           <SectionHeader title="Risk Metrics" subtitle="Performance and risk statistics since inception" />
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
             {[
-              { label: "Annualized Return", value: fmtPct(risk.annualizedReturn), color: trendColor(risk.annualizedReturn), tip: "Compounded annual growth rate of NAV since inception" },
-              { label: "Annualized Volatility", value: fmtPct(risk.annualizedVol), color: "#e2e8f0", tip: "Standard deviation of biweekly NAV returns, annualized. Measures how much returns fluctuate" },
+              { label: "Annualized Return", value: fmtPct(risk.annualizedReturn), color: trendColor(risk.annualizedReturn), tip: "Compounded annual growth rate from monthly returns since inception (CAGR)" },
+              { label: "Annualized Volatility", value: fmtPct(risk.annualizedVol), color: "#e2e8f0", tip: "Standard deviation of monthly returns, annualized. Measures return variability" },
               { label: "Sharpe Ratio", value: risk.sharpeRatio?.toFixed(2), color: risk.sharpeRatio >= 1 ? "#4ade80" : risk.sharpeRatio >= 0.5 ? "#fbbf24" : "#f87171", tip: "Return per unit of risk (return / volatility). >1 is good, >2 is excellent. Uses 0% risk-free rate" },
               { label: "Sortino Ratio", value: risk.sortinoRatio?.toFixed(2), color: risk.sortinoRatio >= 1.5 ? "#4ade80" : risk.sortinoRatio >= 0.5 ? "#fbbf24" : "#f87171", tip: "Like Sharpe but only penalizes downside volatility. Higher is better — ignores upside swings" },
-              { label: "Calmar Ratio", value: risk.calmarRatio?.toFixed(2), color: risk.calmarRatio >= 1 ? "#4ade80" : risk.calmarRatio >= 0.5 ? "#fbbf24" : "#f87171", tip: "Annualized return / max drawdown. Measures how well returns compensate for the worst loss" },
-              { label: "Max Drawdown", value: fmtPct(risk.maxDrawdown), color: "#f87171", tip: "Largest peak-to-trough NAV decline since inception. The worst loss a depositor could have experienced" },
-              { label: "Current Drawdown", value: fmtPct(risk.currentDrawdown), color: risk.currentDrawdown < -5 ? "#f87171" : risk.currentDrawdown < 0 ? "#fbbf24" : "#4ade80", tip: "How far NAV is currently below its all-time high. 0% means at peak" },
-              { label: "Win Rate", value: fmtPct(risk.winRate), color: risk.winRate >= 60 ? "#4ade80" : risk.winRate >= 50 ? "#fbbf24" : "#f87171", tip: "Percentage of months with positive NAV returns" },
-              { label: "Best / Worst Month", value: null, bestWorst: true, color: "#e2e8f0", tip: "Highest and lowest single-month NAV returns since inception" },
+              { label: "Win Rate", value: fmtPct(risk.winRate), color: risk.winRate >= 60 ? "#4ade80" : risk.winRate >= 50 ? "#fbbf24" : "#f87171", tip: "Percentage of months with positive returns" },
+              { label: "Best / Worst Month", value: null, bestWorst: true, color: "#e2e8f0", tip: "Highest and lowest single-month returns since inception" },
             ].map((card) => (
               <div key={card.label} className="risk-card" style={{
                 background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.05)",
