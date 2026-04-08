@@ -107,15 +107,8 @@ function computeMonthlyReturnsHypurrscan(valueHistory, pnlHistory) {
       prev = { year, month, tvl, pnl, ts };
     }
 
-    // Last data point — time-normalize partial month (30 days / actual elapsed days)
-    if (r === len - 1 && prev) {
-      const pnlChange = pnl - prev.pnl;
-      const avgTvl = (tvl + prev.tvl) / 2;
-      const elapsed = ts - prev.ts;
-      if (avgTvl > 0 && elapsed > 0) {
-        returns[year][month + 1] = (pnlChange / avgTvl) * (2592000000 / elapsed) * 100;
-      }
-    }
+    // Last data point — skip current incomplete month entirely
+    // The partial month's performance is visible in the period stat cards instead
   }
   return returns;
 }
