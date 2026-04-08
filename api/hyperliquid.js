@@ -129,75 +129,58 @@ function computeNavDrawdown(valueHistory, pnlHistory) {
   return series;
 }
 
-function computeRiskMetrics(valueHistory, pnlHistory, monthlyReturns) {
-  if (valueHistory.length < 3 || pnlHistory.length < 3) {
-    return { maxDrawdown: 0, currentDrawdown: 0, annualizedReturn: 0, annualizedVol: 0, sharpeRatio: 0, sortinoRatio: 0, calmarRatio: 0, winRate: 0, bestMonth: 0, worstMonth: 0 };
-  }
-
-  // Build NAV series for risk calculations
-  const navSeries = [];
-  for (let i = 0; i < Math.min(valueHistory.length, pnlHistory.length); i++) {
-    const tvl = valueHistory[i].value;
-    const pnl = pnlHistory[Math.min(i, pnlHistory.length - 1)].value;
-    const deposits = tvl - pnl;
-    navSeries.push({ timestamp: valueHistory[i].timestamp, nav: deposits > 0 ? tvl / deposits : 1 });
-  }
-
-  // NAV-based biweekly returns
-  const weeklyReturns = [];
-  for (let i = 1; i < navSeries.length; i++) {
-    if (navSeries[i - 1].nav > 0) {
-      weeklyReturns.push(navSeries[i].nav / navSeries[i - 1].nav - 1);
-    }
-  }
-
-  // Drawdown based on NAV (true per-share drawdown)
-  let navPeak = 0;
-  const navDrawdown = navSeries.map((d) => {
-    navPeak = Math.max(navPeak, d.nav);
-    return { timestamp: d.timestamp, drawdown: navPeak > 0 ? ((d.nav - navPeak) / navPeak) * 100 : 0 };
-  });
-  const maxDrawdown = Math.min(...navDrawdown.map((d) => d.drawdown));
-  const currentDrawdown = navDrawdown.length > 0 ? navDrawdown[navDrawdown.length - 1].drawdown : 0;
-
-  // Annualized return from NAV
-  const firstNav = navSeries[0];
-  const lastNav = navSeries[navSeries.length - 1];
-  const daysDiff = (lastNav.timestamp - firstNav.timestamp) / (1000 * 86400);
-  const totalReturn = lastNav.nav / firstNav.nav;
-  const annualizedReturn = daysDiff > 0 ? (Math.pow(totalReturn, 365 / daysDiff) - 1) * 100 : 0;
-
-  // Annualized volatility — biweekly data = 26 periods per year
-  const periodsPerYear = 26;
-  const meanReturn = weeklyReturns.reduce((s, r) => s + r, 0) / weeklyReturns.length;
-  const variance = weeklyReturns.reduce((s, r) => s + (r - meanReturn) ** 2, 0) / (weeklyReturns.length - 1);
-  const periodVol = Math.sqrt(variance);
-  const annualizedVol = periodVol * Math.sqrt(periodsPerYear) * 100;
-
-  // Sharpe (risk-free = 0)
-  const sharpeRatio = annualizedVol > 0 ? annualizedReturn / annualizedVol : 0;
-
-  // Sortino (downside deviation)
-  const negReturns = weeklyReturns.filter((r) => r < 0);
-  const downsideVar = negReturns.length > 1
-    ? negReturns.reduce((s, r) => s + r ** 2, 0) / (negReturns.length - 1)
-    : 0;
-  const downsideDev = Math.sqrt(downsideVar) * Math.sqrt(periodsPerYear) * 100;
-  const sortinoRatio = downsideDev > 0 ? annualizedReturn / downsideDev : 0;
-
-  // Calmar
-  const calmarRatio = maxDrawdown < 0 ? annualizedReturn / Math.abs(maxDrawdown) : 0;
-
-  // Monthly stats
+// Risk metrics derived entirely from the validated monthly returns
+function computeRiskMetrics(monthlyReturns) {
+  // Flatten all monthly returns into a single array
   const allMonthlyReturns = [];
   Object.values(monthlyReturns).forEach((months) => {
     Object.values(months).forEach((r) => allMonthlyReturns.push(r));
   });
-  const winRate = allMonthlyReturns.length > 0
-    ? (allMonthlyReturns.filter((r) => r > 0).length / allMonthlyReturns.length) * 100
+
+  if (allMonthlyReturns.length < 2) {
+    return { maxDrawdown: 0, currentDrawdown: 0, annualizedReturn: 0, annualizedVol: 0, sharpeRatio: 0, sortinoRatio: 0, calmarRatio: 0, winRate: 0, bestMonth: 0, worstMonth: 0 };
+  }
+
+  // Compounded total return from monthly returns
+  const totalReturnFactor = allMonthlyReturns.reduce((acc, r) => acc * (1 + r / 100), 1);
+  const totalMonths = allMonthlyReturns.length;
+  const annualizedReturn = (Math.pow(totalReturnFactor, 12 / totalMonths) - 1) * 100;
+
+  // Monthly volatility → annualized
+  const meanMonthly = allMonthlyReturns.reduce((s, r) => s + r, 0) / totalMonths;
+  const monthlyVariance = allMonthlyReturns.reduce((s, r) => s + (r - meanMonthly) ** 2, 0) / (totalMonths - 1);
+  const monthlyVol = Math.sqrt(monthlyVariance);
+  const annualizedVol = monthlyVol * Math.sqrt(12);
+
+  // Sharpe (risk-free = 0)
+  const sharpeRatio = annualizedVol > 0 ? annualizedReturn / annualizedVol : 0;
+
+  // Sortino (downside deviation from monthly returns)
+  const negReturns = allMonthlyReturns.filter((r) => r < 0);
+  const downsideVar = negReturns.length > 1
+    ? negReturns.reduce((s, r) => s + r ** 2, 0) / (negReturns.length - 1)
     : 0;
-  const bestMonth = allMonthlyReturns.length > 0 ? Math.max(...allMonthlyReturns) : 0;
-  const worstMonth = allMonthlyReturns.length > 0 ? Math.min(...allMonthlyReturns) : 0;
+  const downsideDev = Math.sqrt(downsideVar) * Math.sqrt(12);
+  const sortinoRatio = downsideDev > 0 ? annualizedReturn / downsideDev : 0;
+
+  // Max drawdown from compounded monthly returns
+  let peak = 1, maxDrawdown = 0;
+  let cumReturn = 1;
+  allMonthlyReturns.forEach((r) => {
+    cumReturn *= (1 + r / 100);
+    peak = Math.max(peak, cumReturn);
+    const dd = ((cumReturn - peak) / peak) * 100;
+    maxDrawdown = Math.min(maxDrawdown, dd);
+  });
+  // Current drawdown
+  const currentDrawdown = ((cumReturn - peak) / peak) * 100;
+
+  // Calmar
+  const calmarRatio = maxDrawdown < 0 ? annualizedReturn / Math.abs(maxDrawdown) : 0;
+
+  const winRate = (allMonthlyReturns.filter((r) => r > 0).length / totalMonths) * 100;
+  const bestMonth = Math.max(...allMonthlyReturns);
+  const worstMonth = Math.min(...allMonthlyReturns);
 
   return {
     maxDrawdown: Math.round(maxDrawdown * 100) / 100,
@@ -267,7 +250,7 @@ export default async function handler(req, res) {
     // Must use unfiltered series so value[i] and pnl[i] align by index
     const monthlyReturns = computeMonthlyReturnsHypurrscan(allTimeHistoryRaw, allTimePnl);
     const drawdownSeries = computeDrawdown(allTimeHistory);
-    const riskMetrics = computeRiskMetrics(allTimeHistory, allTimePnl, monthlyReturns);
+    const riskMetrics = computeRiskMetrics(monthlyReturns);
 
     const change24h = computePeriodChange(dayHistory);
     const change7d = computePeriodChange(weekHistory);
