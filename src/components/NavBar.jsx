@@ -139,6 +139,7 @@ export default function NavBar() {
         {navLink("/morpho", "Morpho", "⬡")}
         {navLink("/pendle", "Pendle", "⊿")}
         {navLink("/maple", "Maple", "❋")}
+        {navLink("/hyperliquid", "Hyperliquid", "◆")}
 
         {sectionLabel("Tools")}
         {navLink("/compare", "Compare", "⇄")}

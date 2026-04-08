@@ -107,7 +107,12 @@ async function gqlQuery(query, variables = {}) {
   });
   if (!resp.ok) throw new Error(`Maple GQL ${resp.status}`);
   const json = await resp.json();
-  if (json.errors?.length) throw new Error(json.errors[0].message);
+  if (json.errors?.length) {
+    console.warn("Maple GQL partial error:", json.errors[0].message);
+    // Return data if available (GraphQL can return partial results with errors)
+    if (json.data) return json.data;
+    throw new Error(json.errors[0].message);
+  }
   return json.data;
 }
 

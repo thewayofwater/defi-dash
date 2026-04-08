@@ -8,6 +8,7 @@ import PendlePage from "./pages/PendlePage";
 import ComparePage from "./pages/ComparePage";
 import PortfolioPage from "./pages/PortfolioPage";
 import MaplePage from "./pages/MaplePage";
+import HyperliquidPage from "./pages/HyperliquidPage";
 import NavBar, { COLLAPSED_W } from "./components/NavBar";
 
 ReactDOM.createRoot(document.getElementById("root")).render(
@@ -21,6 +22,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
           <Route path="/morpho" element={<MorphoPage />} />
           <Route path="/pendle" element={<PendlePage />} />
           <Route path="/maple" element={<MaplePage />} />
+          <Route path="/hyperliquid" element={<HyperliquidPage />} />
           <Route path="/compare" element={<ComparePage />} />
           <Route path="/portfolio" element={<PortfolioPage />} />
         </Routes>

@@ -280,6 +280,34 @@ export default defineConfig(({ mode }) => {
           });
         },
       },
+      {
+        name: "hyperliquid-proxy",
+        configureServer(server) {
+          server.middlewares.use("/api/hyperliquid", async (req, res) => {
+            try {
+              const hlHandler = await import("./api/hyperliquid.js");
+              const fakeRes = {
+                statusCode: 200,
+                headers: {},
+                setHeader(k, v) { this.headers[k] = v; },
+                status(code) { this.statusCode = code; return this; },
+                json(data) {
+                  res.statusCode = this.statusCode;
+                  Object.entries(this.headers).forEach(([k, v]) => res.setHeader(k, v));
+                  res.setHeader("Content-Type", "application/json");
+                  res.end(JSON.stringify(data));
+                },
+              };
+              await hlHandler.default(req, fakeRes);
+            } catch (err) {
+              console.error("Hyperliquid proxy error:", err);
+              res.statusCode = 500;
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({ error: err.message }));
+            }
+          });
+        },
+      },
     ],
   };
 });
