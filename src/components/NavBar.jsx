@@ -141,6 +141,9 @@ export default function NavBar() {
         {navLink("/maple", "Maple", "❋")}
         {navLink("/hyperliquid", "Hyperliquid", "◆")}
 
+        {sectionLabel("Governance")}
+        {navLink("/governance", "Performance", "⚖")}
+
         {sectionLabel("Tools")}
         {navLink("/compare", "Compare", "⇄")}
         {navLink("/portfolio", "Portfolio", "◎")}

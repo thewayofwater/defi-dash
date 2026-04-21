@@ -100,6 +100,34 @@ export function chainName(chain) {
   return CHAIN_DISPLAY_NAMES[chain] || chain;
 }
 
+// Governance voting models — how voting power works (NOT tokenomics or execution)
+export const GOVERNANCE_MODELS = [
+  "Token-Weighted",
+  "veToken",
+  "Staked Governance",
+  "No Governance",
+];
+
+export const GOVERNANCE_MODEL_COLORS = {
+  "Token-Weighted": "#22d3ee",
+  "veToken": "#a78bfa",
+  "Staked Governance": "#fb923c",
+  "No Governance": "#6b7280",
+};
+
+// Execution types — how governance outcomes are implemented
+export const EXECUTION_TYPES = [
+  "On-Chain",
+  "Multisig",
+];
+
+// Revenue sharing model colors
+export const REV_SHARE_MODEL_COLORS = {
+  "Buybacks": "#60a5fa",
+  "Dividends": "#34d399",
+  "Burns": "#f87171",
+};
+
 export const ASSET_COLORS = {
   ETH: "#627EEA",   // ETH blue
   BTC: "#F7931A",   // BTC orange

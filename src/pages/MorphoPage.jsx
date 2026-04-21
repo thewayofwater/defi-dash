@@ -571,8 +571,11 @@ function ChainTvlChart({ vaults, vaultsV2, markets }) {
 function FeeRevenueChart({ vaults, curatorColorMap }) {
   const data = useMemo(() => {
     const byCurator = {};
+    const MAX_APY = 100; // cap grossAPY to filter out data errors (e.g. 297,995% outliers)
     vaults.forEach((v) => {
       const c = getCuratorName(v.curator, v.name);
+      // Skip vaults with unrealistic APY — usually data errors from newly launched vaults
+      if ((v.grossApy || 0) > MAX_APY) return;
       // Annualized fee revenue = TVL × grossAPY × fee rate
       const feeRevenue = v.tvlUsd * (v.grossApy / 100) * (v.fee / 100);
       byCurator[c] = (byCurator[c] || 0) + feeRevenue;
@@ -995,10 +998,20 @@ export default function MorphoPage() {
   }, [vaults, vaultsV2, history]);
 
   // Weighted avg supply & borrow rates for key assets (across markets)
+  // Filters out micro-liquidity markets (<$100K TVL) and APY outliers (>50%)
+  // to prevent exotic/leveraged positions (e.g. RWA collateral) from skewing averages
   const assetRates = useMemo(() => {
     const KEY_ASSETS = ["USDC", "USDT", "WETH"];
+    const MIN_TVL = 100_000;
+    const MAX_APY = 50;
     return KEY_ASSETS.map((sym) => {
-      const matched = markets.filter((m) => (m.loanAsset || "").toUpperCase() === sym);
+      const matched = markets.filter((m) => {
+        if ((m.loanAsset || "").toUpperCase() !== sym) return false;
+        if ((m.supplyUsd || 0) < MIN_TVL) return false;
+        if ((m.supplyApy || 0) > MAX_APY) return false;
+        if ((m.borrowApy || 0) > MAX_APY) return false;
+        return true;
+      });
       const totalSupply = matched.reduce((s, m) => s + (m.supplyUsd || 0), 0);
       const totalBorrow = matched.reduce((s, m) => s + (m.borrowUsd || 0), 0);
       const avgSupplyApy = totalSupply > 0

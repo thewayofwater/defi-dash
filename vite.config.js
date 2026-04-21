@@ -308,6 +308,38 @@ export default defineConfig(({ mode }) => {
           });
         },
       },
+      {
+        name: "governance-proxy",
+        configureServer(server) {
+          server.middlewares.use("/api/governance", async (req, res) => {
+            try {
+              // Pass env vars to process.env for the governance handler
+              if (env.TALLY_API_KEY) process.env.TALLY_API_KEY = env.TALLY_API_KEY;
+              if (env.COINGECKO_PRO_API_KEY) process.env.COINGECKO_PRO_API_KEY = env.COINGECKO_PRO_API_KEY;
+              if (env.DEFILLAMA_API_KEY) process.env.DEFILLAMA_API_KEY = env.DEFILLAMA_API_KEY;
+              const govHandler = await import("./api/governance.js");
+              const fakeRes = {
+                statusCode: 200,
+                headers: {},
+                setHeader(k, v) { this.headers[k] = v; },
+                status(code) { this.statusCode = code; return this; },
+                json(data) {
+                  res.statusCode = this.statusCode;
+                  Object.entries(this.headers).forEach(([k, v]) => res.setHeader(k, v));
+                  res.setHeader("Content-Type", "application/json");
+                  res.end(JSON.stringify(data));
+                },
+              };
+              await govHandler.default(req, fakeRes);
+            } catch (err) {
+              console.error("Governance proxy error:", err);
+              res.statusCode = 500;
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({ error: err.message }));
+            }
+          });
+        },
+      },
     ],
   };
 });
