@@ -137,6 +137,7 @@ export default function NavBar() {
         {sectionLabel("Protocols")}
         {navLink("/aave", "Aave", "△")}
         {navLink("/morpho", "Morpho", "⬡")}
+        {navLink("/sparklend", "SparkLend", "✦")}
         {navLink("/pendle", "Pendle", "⊿")}
         {navLink("/maple", "Maple", "❋")}
         {navLink("/hyperliquid", "Hyperliquid", "◆")}

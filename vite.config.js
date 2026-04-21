@@ -309,6 +309,34 @@ export default defineConfig(({ mode }) => {
         },
       },
       {
+        name: "sparklend-proxy",
+        configureServer(server) {
+          server.middlewares.use("/api/sparklend", async (req, res) => {
+            try {
+              const sparklendHandler = await import("./api/sparklend.js");
+              const fakeRes = {
+                statusCode: 200,
+                headers: {},
+                setHeader(k, v) { this.headers[k] = v; },
+                status(code) { this.statusCode = code; return this; },
+                json(data) {
+                  res.statusCode = this.statusCode;
+                  Object.entries(this.headers).forEach(([k, v]) => res.setHeader(k, v));
+                  res.setHeader("Content-Type", "application/json");
+                  res.end(JSON.stringify(data));
+                },
+              };
+              await sparklendHandler.default(req, fakeRes);
+            } catch (err) {
+              console.error("Sparklend proxy error:", err);
+              res.statusCode = 500;
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({ error: err.message }));
+            }
+          });
+        },
+      },
+      {
         name: "governance-proxy",
         configureServer(server) {
           server.middlewares.use("/api/governance", async (req, res) => {
