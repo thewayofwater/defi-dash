@@ -378,37 +378,118 @@ function ActivityFeed({ events }) {
 
 // ─── Historical Supply Chart (BTC-denominated) ───
 
-function HistoricalSupplyChart({ historicalSupply, days }) {
+function HistoricalSupplyTooltip({ active, payload, label }) {
+  if (!active || !payload || !payload.length) return null;
+  const p = payload[0]?.payload;
+  if (!p) return null;
+  const net = (p.mints || 0) - (p.burns || 0);
+  const netColor = net > 0 ? "#4ade80" : net < 0 ? "#f87171" : "#94a3b8";
+  return (
+    <div style={{ background: "#131926", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 5, padding: "10px 12px", fontSize: 11, fontFamily: mono, color: "#e2e8f0", minWidth: 200 }}>
+      <div style={{ color: "#6b7a8d", fontSize: 10, letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 }}>{label}</div>
+      <div style={{ display: "grid", gridTemplateColumns: "auto auto", gap: "4px 14px", fontVariantNumeric: "tabular-nums" }}>
+        <span style={{ color: ACCENT }}>Supply</span>
+        <span style={{ textAlign: "right", color: "#e2e8f0" }}>{(p.supply || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} BTC</span>
+        {(p.mints > 0 || p.burns > 0) && (
+          <>
+            <span style={{ color: "#4ade80" }}>Minted</span>
+            <span style={{ textAlign: "right", color: "#4ade80" }}>+{(p.mints || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+            <span style={{ color: "#f87171" }}>Burned</span>
+            <span style={{ textAlign: "right", color: "#f87171" }}>-{(p.burns || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+            <span style={{ color: "#94a3b8" }}>Net</span>
+            <span style={{ textAlign: "right", color: netColor, fontWeight: 600 }}>
+              {net > 0 ? "+" : ""}{net.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+            </span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function HistoricalSupplyChart({ historicalSupply, events, days }) {
   const data = useMemo(() => {
     const filtered = days === "all"
       ? historicalSupply || []
       : (historicalSupply || []).slice(-days);
-    return filtered.map((d) => ({
-      date: new Date(d.date * 1000).toISOString().slice(0, 10),
-      supply: d.value,
-    }));
-  }, [historicalSupply, days]);
+
+    // Aggregate mint/burn events by UTC day
+    const DAY_MS = 86400 * 1000;
+    const flowsByDay = new Map();
+    for (const e of events || []) {
+      if (!e.date || (e.type !== "mint" && e.type !== "burn")) continue;
+      const ts = new Date(e.date).getTime();
+      if (!Number.isFinite(ts)) continue;
+      const dayKey = new Date(Math.floor(ts / DAY_MS) * DAY_MS).toISOString().slice(0, 10);
+      const bucket = flowsByDay.get(dayKey) || { mints: 0, burns: 0 };
+      if (e.type === "mint") bucket.mints += e.amount || 0;
+      else bucket.burns += e.amount || 0;
+      flowsByDay.set(dayKey, bucket);
+    }
+
+    return filtered.map((d) => {
+      const dayKey = new Date(d.date * 1000).toISOString().slice(0, 10);
+      const flows = flowsByDay.get(dayKey) || { mints: 0, burns: 0 };
+      return {
+        date: dayKey,
+        supply: d.value,
+        mints: flows.mints,
+        burnsNeg: -flows.burns, // negative so it renders below zero on the flow axis
+        burns: flows.burns,
+      };
+    });
+  }, [historicalSupply, events, days]);
 
   if (!data.length) return <div style={{ color: "#6b7a8d", fontSize: 13, fontFamily: mono, padding: 16 }}>No historical data</div>;
 
+  // Right Y-axis bounds (daily flows): make symmetric around zero so mint/burn scales match
+  const maxFlow = Math.max(
+    ...data.map((d) => Math.max(d.mints || 0, d.burns || 0)),
+    1
+  );
+  const flowDomain = [-maxFlow * 1.1, maxFlow * 1.1];
+
   return (
-    <ResponsiveContainer width="100%" height={280}>
-      <AreaChart data={data} margin={{ left: 10, right: 20, top: 5, bottom: 5 }}>
+    <ResponsiveContainer width="100%" height={300}>
+      <ComposedChart data={data} margin={{ left: 10, right: 20, top: 8, bottom: 5 }}>
         <defs>
           <linearGradient id="wbtcSupplyGrad" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor={ACCENT} stopOpacity={0.3} />
             <stop offset="100%" stopColor={ACCENT} stopOpacity={0} />
           </linearGradient>
         </defs>
-        <XAxis dataKey="date" tick={{ fill: "#6b7a8d", fontSize: 10, fontFamily: mono }} axisLine={false} tickLine={false} interval={Math.floor(data.length / 6)} tickFormatter={(v) => v.slice(5)} />
-        <YAxis tickFormatter={(v) => v >= 1000 ? `${(v / 1000).toFixed(0)}K` : v.toFixed(0)} tick={{ fill: "#6b7a8d", fontSize: 10, fontFamily: mono }} axisLine={false} tickLine={false} />
-        <Tooltip
-          {...chartTooltipStyle}
-          formatter={(v) => [`${v.toLocaleString(undefined, { maximumFractionDigits: 2 })} BTC`, "Supply"]}
-          labelFormatter={(v) => v}
+        <XAxis
+          dataKey="date"
+          tick={{ fill: "#6b7a8d", fontSize: 10, fontFamily: mono }}
+          axisLine={false}
+          tickLine={false}
+          interval={Math.floor(data.length / 6)}
+          tickFormatter={(v) => v.slice(5)}
         />
-        <Area type="monotone" dataKey="supply" stroke={ACCENT} fill="url(#wbtcSupplyGrad)" strokeWidth={2} dot={false} />
-      </AreaChart>
+        <YAxis
+          yAxisId="supply"
+          tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(0)}K` : v.toFixed(0))}
+          tick={{ fill: "#6b7a8d", fontSize: 10, fontFamily: mono }}
+          axisLine={false}
+          tickLine={false}
+          width={48}
+        />
+        <YAxis
+          yAxisId="flow"
+          orientation="right"
+          domain={flowDomain}
+          tickFormatter={(v) => (v === 0 ? "0" : `${v > 0 ? "+" : ""}${v.toFixed(0)}`)}
+          tick={{ fill: "#6b7a8d", fontSize: 10, fontFamily: mono }}
+          axisLine={false}
+          tickLine={false}
+          width={44}
+        />
+        <ReferenceLine y={0} yAxisId="flow" stroke="rgba(148,163,184,0.25)" strokeWidth={1} />
+        <Tooltip content={<HistoricalSupplyTooltip />} cursor={{ stroke: "rgba(255,255,255,0.06)", strokeWidth: 1 }} />
+        <Bar yAxisId="flow" dataKey="mints" fill="#4ade80" fillOpacity={0.75} isAnimationActive={false} />
+        <Bar yAxisId="flow" dataKey="burnsNeg" fill="#f87171" fillOpacity={0.75} isAnimationActive={false} />
+        <Area yAxisId="supply" type="monotone" dataKey="supply" stroke={ACCENT} fill="url(#wbtcSupplyGrad)" strokeWidth={2} dot={false} />
+      </ComposedChart>
     </ResponsiveContainer>
   );
 }
@@ -1317,14 +1398,14 @@ export default function WbtcPage() {
       {/* Charts */}
       <div style={{ padding: "20px 26px 0", display: "flex", flexDirection: "column", gap: 16 }}>
         <ModuleCard>
-          <SectionHeader title="Historical WBTC Supply" subtitle="Cumulative completed mint/burn orders across all chains since inception" />
-          {refreshing ? <ChartShimmer height={280} /> : (
-            <div key={refreshKey}><HistoricalSupplyChart historicalSupply={historicalSupply} days={period} /></div>
+          <SectionHeader title="Historical WBTC Supply" subtitle="Cumulative supply with daily mint / burn activity" />
+          {refreshing ? <ChartShimmer height={300} /> : (
+            <div key={refreshKey}><HistoricalSupplyChart historicalSupply={historicalSupply} events={feedEvents} days={period} /></div>
           )}
         </ModuleCard>
 
         <ModuleCard>
-          <SectionHeader title="WBTC Supply by Chain" subtitle="Native omnichain supply on each chain (OFT standard)" />
+          <SectionHeader title="WBTC Supply by Chain" subtitle="Natively minted supply on each chain (excludes bridged balances)" />
           {refreshing ? <ChartShimmer height={280} /> : (
             <div key={refreshKey}><SupplyByChainChart chainSupplies={chainSupplies} /></div>
           )}
