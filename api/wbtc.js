@@ -313,8 +313,33 @@ export default async function handler(req, res) {
       return o.date;
     };
 
+    // Include orders whose on-chain effect has already landed:
+    //  - Completed: always (BTC+ETH both settled)
+    //  - Pending BURN: burn tx hits ETH first (reducing totalSupply) then BTC
+    //    is released — if there's any eth history entry, supply already dropped.
+    //  - Pending MINT: BTC deposit happens first, mint tx hits ETH last — only
+    //    include if history has an eth `completed` entry (otherwise totalSupply
+    //    hasn't risen yet).
+    // Canceled / rejected never moved funds, always excluded.
+    const hasEthHistory = (o, requireCompleted) => {
+      for (const h of (o.history || [])) {
+        if (h.chain !== "eth") continue;
+        if (requireCompleted ? h.action === "completed" : (h.action === "completed" || h.action === "pending")) {
+          return true;
+        }
+      }
+      return false;
+    };
     const orderEvents = (wbtcNetworkData.orders || [])
-      .filter((o) => (o.type === "mint" || o.type === "burn") && o.status === "completed")
+      .filter((o) => {
+        if (o.type !== "mint" && o.type !== "burn") return false;
+        if (o.status === "completed") return true;
+        if (o.status === "pending") {
+          if (o.type === "burn") return hasEthHistory(o, false); // eth burn tx landed
+          if (o.type === "mint") return hasEthHistory(o, true);  // eth mint completed
+        }
+        return false;
+      })
       .map((o) => {
         const chainKey = o.sourceChain || "eth";
         // Find the on-chain transaction in history for this chain
