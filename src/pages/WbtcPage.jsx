@@ -7,7 +7,7 @@ import { useWbtcData } from "../hooks/useWbtcData";
 import { useWbtcPoolsData } from "../hooks/useWbtcPoolsData";
 import { useWbtcPegData } from "../hooks/useWbtcPegData";
 import { fmt, fmtPct } from "../utils/format";
-import { SectionHeader, LoadingSpinner, ModuleCard, ChartShimmer } from "../components/Shared";
+import { SectionHeader, LoadingSpinner, ModuleCard, ChartShimmer, Pagination } from "../components/Shared";
 
 const mono = "'JetBrains Mono', monospace";
 const ACCENT = "#f7931a"; // Bitcoin orange
@@ -56,36 +56,6 @@ function txUrl(chain, txHash) {
     Osmosis: `https://www.mintscan.io/osmosis/txs/${txHash}`,
   };
   return url[chain] || null;
-}
-
-// ─── Shared Pagination ───
-
-function Pagination({ page, totalPages, onPageChange }) {
-  if (totalPages <= 1) return null;
-  return (
-    <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 4, marginTop: 10, flexWrap: "wrap" }}>
-      <button onClick={() => onPageChange(0)} disabled={page === 0} style={{ background: "none", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 3, padding: "3px 8px", fontSize: 10, fontFamily: mono, color: "#94a3b8", cursor: "pointer", opacity: page === 0 ? 0.3 : 1 }}>{"\u00AB"}</button>
-      <button onClick={() => onPageChange(Math.max(0, page - 1))} disabled={page === 0} style={{ background: "none", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 3, padding: "3px 8px", fontSize: 10, fontFamily: mono, color: "#94a3b8", cursor: "pointer", opacity: page === 0 ? 0.3 : 1 }}>{"\u2039"}</button>
-      {(() => {
-        const pages = [];
-        let start = Math.max(0, page - 2);
-        let end = Math.min(totalPages - 1, start + 4);
-        start = Math.max(0, end - 4);
-        if (start > 0) { pages.push(0); if (start > 1) pages.push("..."); }
-        for (let i = start; i <= end; i++) pages.push(i);
-        if (end < totalPages - 1) { if (end < totalPages - 2) pages.push("..."); pages.push(totalPages - 1); }
-        return pages.map((p, idx) =>
-          p === "..." ? (
-            <span key={`dot-${idx}`} style={{ fontSize: 10, fontFamily: mono, color: "#4a5568", padding: "3px 2px" }}>{"\u2026"}</span>
-          ) : (
-            <button key={p} onClick={() => onPageChange(p)} style={{ background: p === page ? "rgba(247,147,26,0.15)" : "none", border: p === page ? "1px solid rgba(247,147,26,0.3)" : "1px solid rgba(255,255,255,0.06)", borderRadius: 3, padding: "3px 8px", fontSize: 10, fontFamily: mono, color: p === page ? ACCENT : "#94a3b8", cursor: "pointer", fontWeight: p === page ? 600 : 400, minWidth: 28, textAlign: "center" }}>{p + 1}</button>
-          )
-        );
-      })()}
-      <button onClick={() => onPageChange(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1} style={{ background: "none", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 3, padding: "3px 8px", fontSize: 10, fontFamily: mono, color: "#94a3b8", cursor: "pointer", opacity: page >= totalPages - 1 ? 0.3 : 1 }}>{"\u203A"}</button>
-      <button onClick={() => onPageChange(totalPages - 1)} disabled={page >= totalPages - 1} style={{ background: "none", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 3, padding: "3px 8px", fontSize: 10, fontFamily: mono, color: "#94a3b8", cursor: "pointer", opacity: page >= totalPages - 1 ? 0.3 : 1 }}>{"\u00BB"}</button>
-    </div>
-  );
 }
 
 const FILTER_STYLE = {
@@ -261,7 +231,7 @@ function CustodianTable({ addresses }) {
           </tbody>
         </table>
       </div>
-      <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
+      <Pagination page={page} totalPages={totalPages} onPageChange={setPage} accent={ACCENT} />
     </div>
   );
 }
@@ -371,7 +341,7 @@ function ActivityFeed({ events }) {
         </tbody>
       </table>
       </div>
-      <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
+      <Pagination page={page} totalPages={totalPages} onPageChange={setPage} accent={ACCENT} />
     </div>
   );
 }

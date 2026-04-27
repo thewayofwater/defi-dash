@@ -115,14 +115,16 @@ export default function MaplePage() {
     return data.pools.reduce((s, p) => s + (p.totalAssets || 0), 0);
   }, [data]);
 
-  // Total liquidity = total assets minus real borrower loans
+  // Total liquidity = sum of non-loan capital allocations (strategies, AMM
+  // positions, intercompany, sky, aave). Matches Maple's own "Liquidity"
+  // definition: capital actively deployed in liquid, on-demand-recoverable
+  // positions — distinct from borrower loans (illiquid) and idle cash
+  // sitting in the pool.
   const totalLiquidity = useMemo(() => {
-    if (!data?.pools || !data?.loans) return 0;
-    const ta = data.pools.reduce((s, p) => s + (p.totalAssets || 0), 0);
-    const loanPrincipal = data.loans
-      .filter((l) => !l.metaType)
+    if (!data?.loans) return 0;
+    return data.loans
+      .filter((l) => !!l.metaType)
       .reduce((s, l) => s + (l.principal || 0), 0);
-    return ta - loanPrincipal;
   }, [data]);
 
   // All positions (loans + allocations) with type label
@@ -390,20 +392,34 @@ export default function MaplePage() {
     const loanCount = filtered.length;
     const cr = loanValue > 0 ? (collValue / loanValue) * 100 : 0;
 
-    let poolAssets, liquidity;
+    // Liquidity = sum of non-loan capital allocations (Maple's own definition).
+    // For pool-specific views, filter the allocations to that pool.
+    const allLoans = data?.loans || [];
+    const allocations = allLoans.filter((l) => !!l.metaType);
+    const liquidity = poolView === "overall"
+      ? totalLiquidity
+      : allocations
+          .filter((l) => l.pool === (poolView === "usdc" ? USDC_ID : USDT_ID))
+          .reduce((s, l) => s + (l.principal || 0), 0);
+
+    // Idle cash = uncommitted USDC/USDT in the pool contract (from API reconciliation).
+    const recon = data?.reconciliation || {};
+    const idle = poolView === "overall"
+      ? Object.values(recon).reduce((s, r) => s + (r.idle || 0), 0)
+      : (recon[poolView]?.idle || 0);
+
+    let poolAssets;
     if (poolView === "overall") {
       poolAssets = totalAssets;
-      liquidity = totalLiquidity;
     } else {
       const pool = (data?.pools || []).find((p) =>
         p.id === (poolView === "usdc" ? USDC_ID : USDT_ID)
       );
       poolAssets = pool?.totalAssets || 0;
-      liquidity = poolAssets - loanValue;
     }
     const aum = collValue + loanValue + liquidity;
 
-    return { aum, liquidity, collValue, loanValue, loanCount, cr, poolAssets };
+    return { aum, liquidity, idle, collValue, loanValue, loanCount, cr, poolAssets };
   }, [allPositions, poolView, totalAssets, totalLiquidity, data]);
 
   // ─── Loading / Error states (matching other protocol pages) ───
@@ -510,9 +526,9 @@ export default function MaplePage() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginTop: 10 }}>
           {[
             { label: "Collateral Value", value: fmt(heroStats.collValue, 2) },
-            { label: "Outstanding Loans", value: fmt(heroStats.loanValue, 2) },
+            { label: "Outstanding Loans", value: fmt(heroStats.loanValue, 2), sub: `across ${heroStats.loanCount} active loans` },
             { label: "Liquidity", value: fmt(heroStats.liquidity, 2) },
-            { label: "Active Loans", value: heroStats.loanCount },
+            { label: "Idle Cash", value: fmt(heroStats.idle, 2) },
           ].map((card) => (
             <div key={card.label} style={{
               background: "rgba(255,255,255,0.025)", border: "1px solid rgba(255,255,255,0.05)",
@@ -521,6 +537,7 @@ export default function MaplePage() {
               {refreshing && <div style={{ position: "absolute", inset: 0, background: "linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.04) 40%, rgba(255,255,255,0.06) 50%, rgba(255,255,255,0.04) 60%, transparent 100%)", backgroundSize: "200% 100%", animation: "shimmer 1.5s ease-in-out infinite" }} />}
               <div style={{ fontSize: 11, color: "#5a6678", fontFamily: mono, letterSpacing: 1, textTransform: "uppercase" }}>{card.label}</div>
               <div style={{ fontSize: 20, fontWeight: 700, color: "#e2e8f0", fontFamily: mono, marginTop: 2 }}>{card.value}</div>
+              {card.sub && <div style={{ fontSize: 10, color: "#6b7a8d", fontFamily: mono, marginTop: 2 }}>{card.sub}</div>}
             </div>
           ))}
         </div>

@@ -129,6 +129,9 @@ All in `src/components/Shared.jsx`:
 - Flex wrap, `gap: 14`, centered, `marginTop: 10`
 - Each item: 10×2.5 colored bar + 10 mono `#94a3b8` label
 
+### `<Pagination page totalPages onPageChange accent />`
+- See §8 for full spec. Always reuse — never re-roll per page.
+
 ---
 
 ## 5. Tables
@@ -250,19 +253,40 @@ Looser visual — neutral grays so they don't compete with timeframe pills:
 
 ## 8. Pagination
 
-Layout: flex centered, `gap: 4`, `marginTop: 10`, `flexWrap: wrap`.
+**Always use the shared `<Pagination />` component from `src/components/Shared.jsx`.** Do not re-roll this styling per page — it's the #1 thing that drifts when copy-pasted. Any table with > 1 page of data should use this.
 
-Nav buttons (`«`, `‹`, `›`, `»`):
-```js
-{ background: "none", border: "1px solid rgba(255,255,255,0.06)",
-  borderRadius: 3, padding: "3px 8px", fontSize: 10, fontFamily: mono,
-  color: "#94a3b8", cursor: "pointer",
-  opacity: disabled ? 0.3 : 1 }
+### Usage
+
+```jsx
+import { Pagination } from "../components/Shared";
+
+// In a table component:
+const [page, setPage] = useState(0);
+const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+// ... render rows ...
+<Pagination page={page} totalPages={totalPages} onPageChange={setPage} accent={ACCENT} />
 ```
 
-Page number buttons (active/inactive same as timeframe pills, but `borderRadius: 3, padding: "3px 8px", minWidth: 28`).
+### Props
 
-Ellipsis: `…` in 10 mono `#4a5568`, `padding: "3px 2px"`.
+| Prop | Type | Default | Notes |
+|---|---|---|---|
+| `page` | number | required | Zero-indexed current page |
+| `totalPages` | number | required | Returns `null` if `<= 1` |
+| `onPageChange` | function | required | Called with new page index |
+| `accent` | string | `"#22d3ee"` | Hex for active-page highlight; pass the page's protocol accent |
+
+### What it renders
+
+- First / prev / next / last nav buttons (`«`, `‹`, `›`, `»`)
+- Windowed page numbers (current ± 2), ellipses around gaps, always shows first + last page
+- Active page gets `rgba(accent, 0.15)` background + `rgba(accent, 0.3)` border + accent color
+- Layout: flex centered, `gap: 4`, `marginTop: 10`, `flexWrap: wrap`
+- Nav button style: transparent bg, `1px solid rgba(255,255,255,0.06)` border, `borderRadius: 3`, `3px 8px` padding, 10 mono `#94a3b8`, `opacity: 0.3` when disabled
+- Page button minWidth `28px` for consistent spacing
+- Ellipsis: `…` in 10 mono `#4a5568`
+
+Reference usages: `WbtcPage.jsx` (`CustodianTable`, `ActivityFeed`), `AcrossPage.jsx` (`LargeTransfersTable`).
 
 ---
 

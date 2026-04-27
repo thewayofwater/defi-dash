@@ -7,7 +7,7 @@ const POOLS = {
 };
 
 const TOKEN_DECIMALS = {
-  BTC: 8, LBTC: 8, XRP: 6, USTB: 6, jitoSOL: 9,
+  BTC: 8, LBTC: 8, cbBTC: 8, WBTC: 8, XRP: 6, USTB: 6, jitoSOL: 9,
   HYPE: 18, ETH: 18, weETH: 18, SOL: 9, tETH: 18,
   USDC: 6, USDT: 6, PYUSD: 6, sUSDS: 18,
   PT_sUSDE: 18, PT_USDE: 18, LP_USR: 18, USR: 18,
@@ -15,7 +15,8 @@ const TOKEN_DECIMALS = {
 
 // CoinGecko ID mapping for collateral price lookups (via DeFiLlama coins API)
 const COINGECKO_IDS = {
-  BTC: "bitcoin", LBTC: "lombard-staked-btc", XRP: "ripple",
+  BTC: "bitcoin", LBTC: "lombard-staked-btc", cbBTC: "coinbase-wrapped-btc",
+  WBTC: "wrapped-bitcoin", XRP: "ripple",
   HYPE: "hyperliquid", ETH: "ethereum", weETH: "wrapped-eeth",
   SOL: "solana", jitoSOL: "jito-staked-sol", tETH: "threshold-ethereum",
   USDC: "usd-coin", USDT: "tether", PYUSD: "paypal-usd",
@@ -64,7 +65,11 @@ function parseCollateralAmount(rawAmount, assetSymbol) {
 
 async function fetchAssetVolatility() {
   // Only fetch volatility for collateral assets (not stablecoins)
-  const VOL_ASSETS = { BTC: "bitcoin", LBTC: "lombard-staked-btc", XRP: "ripple", HYPE: "hyperliquid" };
+  const VOL_ASSETS = {
+    BTC: "bitcoin", LBTC: "lombard-staked-btc",
+    cbBTC: "coinbase-wrapped-btc", WBTC: "wrapped-bitcoin",
+    XRP: "ripple", HYPE: "hyperliquid",
+  };
   const coins = Object.values(VOL_ASSETS).map((id) => `coingecko:${id}`).join(",");
   const now = Math.floor(Date.now() / 1000);
   const start = now - 90 * 86400; // 90 days

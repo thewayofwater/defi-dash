@@ -193,6 +193,70 @@ export function ChartShimmer({ height = 200 }) {
   );
 }
 
+// Standard pagination control used across every table in the dashboard.
+// Pass an `accent` hex for the active-page highlight (defaults to cyan).
+// Shows first/prev/next/last nav buttons plus windowed page numbers with ellipses.
+export function Pagination({ page, totalPages, onPageChange, accent = "#22d3ee" }) {
+  if (totalPages <= 1) return null;
+  const navBtn = {
+    background: "none",
+    border: "1px solid rgba(255,255,255,0.06)",
+    borderRadius: 3,
+    padding: "3px 8px",
+    fontSize: 10,
+    fontFamily: mono,
+    color: "#94a3b8",
+    cursor: "pointer",
+  };
+  const pages = [];
+  let start = Math.max(0, page - 2);
+  let end = Math.min(totalPages - 1, start + 4);
+  start = Math.max(0, end - 4);
+  if (start > 0) { pages.push(0); if (start > 1) pages.push("..."); }
+  for (let i = start; i <= end; i++) pages.push(i);
+  if (end < totalPages - 1) { if (end < totalPages - 2) pages.push("..."); pages.push(totalPages - 1); }
+
+  // Parse accent to rgb for active-page background
+  const hex = accent.replace("#", "");
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+
+  return (
+    <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 4, marginTop: 10, flexWrap: "wrap" }}>
+      <button onClick={() => onPageChange(0)} disabled={page === 0} style={{ ...navBtn, opacity: page === 0 ? 0.3 : 1 }}>{"\u00AB"}</button>
+      <button onClick={() => onPageChange(Math.max(0, page - 1))} disabled={page === 0} style={{ ...navBtn, opacity: page === 0 ? 0.3 : 1 }}>{"\u2039"}</button>
+      {pages.map((p, idx) =>
+        p === "..." ? (
+          <span key={`dot-${idx}`} style={{ fontSize: 10, fontFamily: mono, color: "#4a5568", padding: "3px 2px" }}>{"\u2026"}</span>
+        ) : (
+          <button
+            key={p}
+            onClick={() => onPageChange(p)}
+            style={{
+              background: p === page ? `rgba(${r},${g},${b},0.15)` : "none",
+              border: p === page ? `1px solid rgba(${r},${g},${b},0.3)` : "1px solid rgba(255,255,255,0.06)",
+              borderRadius: 3,
+              padding: "3px 8px",
+              fontSize: 10,
+              fontFamily: mono,
+              color: p === page ? accent : "#94a3b8",
+              cursor: "pointer",
+              fontWeight: p === page ? 600 : 400,
+              minWidth: 28,
+              textAlign: "center",
+            }}
+          >
+            {p + 1}
+          </button>
+        )
+      )}
+      <button onClick={() => onPageChange(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1} style={{ ...navBtn, opacity: page >= totalPages - 1 ? 0.3 : 1 }}>{"\u203A"}</button>
+      <button onClick={() => onPageChange(totalPages - 1)} disabled={page >= totalPages - 1} style={{ ...navBtn, opacity: page >= totalPages - 1 ? 0.3 : 1 }}>{"\u00BB"}</button>
+    </div>
+  );
+}
+
 export const tooltipStyle = {
   background: "#131926",
   border: "1px solid rgba(255,255,255,0.07)",
