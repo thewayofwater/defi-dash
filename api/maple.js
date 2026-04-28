@@ -64,13 +64,17 @@ function parseCollateralAmount(rawAmount, assetSymbol) {
 }
 
 async function fetchAssetVolatility() {
-  // Only fetch volatility for collateral assets (not stablecoins)
-  const VOL_ASSETS = {
-    BTC: "bitcoin", LBTC: "lombard-staked-btc",
-    cbBTC: "coinbase-wrapped-btc", WBTC: "wrapped-bitcoin",
-    XRP: "ripple", HYPE: "hyperliquid",
-  };
-  const coins = Object.values(VOL_ASSETS).map((id) => `coingecko:${id}`).join(",");
+  // DeFiLlama's /chart endpoint caps at 500 data points per request
+  // (coins × timestamps). We compute vol for one BTC-equivalent series
+  // (since BTC, WBTC, cbBTC, LBTC all track BTC ~1:1) plus distinct assets.
+  // 3 coins × 90 days = 270 points, well under the cap.
+  const VOL_FETCH = { BTC: "bitcoin", XRP: "ripple", HYPE: "hyperliquid" };
+  // Mirror BTC's annualized vol to its derivatives. They peg to BTC and
+  // their on-chain prices have negligible idiosyncratic vol; using BTC's
+  // realized vol is the right risk proxy.
+  const BTC_DERIVATIVES = ["LBTC", "WBTC", "cbBTC"];
+
+  const coins = Object.values(VOL_FETCH).map((id) => `coingecko:${id}`).join(",");
   const now = Math.floor(Date.now() / 1000);
   const start = now - 90 * 86400; // 90 days
   try {
@@ -81,7 +85,7 @@ async function fetchAssetVolatility() {
     if (!resp.ok) return {};
     const data = await resp.json();
     const volatility = {};
-    for (const [sym, geckoId] of Object.entries(VOL_ASSETS)) {
+    for (const [sym, geckoId] of Object.entries(VOL_FETCH)) {
       const series = data.coins?.[`coingecko:${geckoId}`]?.prices;
       if (!series || series.length < 10) continue;
       const prices = series.map((p) => p.price);
@@ -96,6 +100,10 @@ async function fetchAssetVolatility() {
       const variance = returns.reduce((s, r) => s + (r - mean) ** 2, 0) / (returns.length - 1);
       const dailyVol = Math.sqrt(variance);
       volatility[sym] = +(dailyVol * Math.sqrt(365)).toFixed(4); // annualized
+    }
+    // Mirror BTC's vol to BTC-pegged derivatives.
+    if (volatility.BTC != null) {
+      for (const sym of BTC_DERIVATIVES) volatility[sym] = volatility.BTC;
     }
     return volatility;
   } catch {
