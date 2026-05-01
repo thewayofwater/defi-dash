@@ -133,6 +133,61 @@ function ExposurePie({ portfolio, poolMap, groupBy, colorMap }) {
 }
 
 /* ── Weighted Yield History Chart ── */
+// Custom tooltip: shows the day's weighted APY plus a per-pool contribution
+// breakdown (weight × APY = pp), sorted descending so the spike-driver is
+// always at the top. Top 8 by default; "+N more" footnote if portfolio is
+// larger.
+function WeightedYieldTooltip({ active, payload, label, poolMap, isCumulative }) {
+  if (!active || !payload || !payload.length) return null;
+  const datum = payload[0]?.payload;
+  if (!datum) return null;
+  const main = isCumulative ? datum.cumulativeYield : datum.weightedApy;
+  const mainLabel = isCumulative ? "Cumulative" : "Weighted APY";
+  const contributions = datum.contributions || [];
+  const TOP_N = 8;
+  const visible = contributions.slice(0, TOP_N);
+  const hidden = contributions.length - visible.length;
+  const symbolFor = (poolId) => {
+    const p = poolMap[poolId];
+    if (!p) return poolId.slice(0, 10);
+    // Symbol + project distinguishes e.g. "USDC/cbBTC (Morpho Blue)"
+    return `${p.symbol}${p.project ? ` (${p.project})` : ""}`;
+  };
+  return (
+    <div style={{
+      background: "#131926", border: "1px solid rgba(255,255,255,0.07)",
+      borderRadius: 5, padding: "10px 12px", fontFamily: mono, fontSize: 11,
+      color: "#e2e8f0", maxWidth: 360, boxShadow: "0 6px 18px rgba(0,0,0,0.5)",
+    }}>
+      <div style={{ color: "#94a3b8", marginBottom: 4 }}>{label}</div>
+      <div style={{ marginBottom: 8 }}>
+        <span style={{ color: "#94a3b8" }}>{mainLabel}: </span>
+        <span style={{ color: "#22d3ee", fontWeight: 600 }}>{main?.toFixed(2)}%</span>
+      </div>
+      {!isCumulative && contributions.length > 0 && (
+        <>
+          <div style={{ fontSize: 9, color: "#6b7a8d", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
+            By contribution
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: "2px 8px", fontSize: 10, fontVariantNumeric: "tabular-nums" }}>
+            {visible.map((c) => (
+              <React.Fragment key={c.poolId}>
+                <span style={{ color: "#cbd5e1", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{symbolFor(c.poolId)}</span>
+                <span style={{ color: "#6b7a8d" }}>{(c.weightShare * 100).toFixed(0)}%</span>
+                <span style={{ color: "#94a3b8" }}>× {c.apy.toFixed(2)}%</span>
+                <span style={{ color: "#22d3ee" }}>= {c.contributionPp.toFixed(2)}pp</span>
+              </React.Fragment>
+            ))}
+          </div>
+          {hidden > 0 && (
+            <div style={{ fontSize: 9, color: "#6b7a8d", marginTop: 4 }}>+{hidden} more</div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function WeightedYieldChart({ entries, poolMap }) {
   const { data, loading } = usePortfolioChart(entries, poolMap);
   const [mode, setMode] = useState("apy");
@@ -160,7 +215,10 @@ function WeightedYieldChart({ entries, poolMap }) {
         <LineChart data={data}>
           <XAxis dataKey="date" tick={{ fill: "#4a5568", fontSize: 10, fontFamily: mono }} tickFormatter={(v) => v.slice(5)} axisLine={false} tickLine={false} minTickGap={40} />
           <YAxis tick={{ fill: "#4a5568", fontSize: 10, fontFamily: mono }} tickFormatter={(v) => `${v.toFixed(isCumulative ? 1 : 1)}%`} axisLine={false} tickLine={false} width={45} />
-          <Tooltip {...chartTooltipStyle} labelFormatter={(v) => v} formatter={(v) => [`${v.toFixed(2)}%`, isCumulative ? "Cumulative" : "Weighted APY"]} />
+          <Tooltip
+            content={<WeightedYieldTooltip poolMap={poolMap} isCumulative={isCumulative} />}
+            cursor={{ stroke: "rgba(255,255,255,0.08)", strokeWidth: 1 }}
+          />
           <Line dataKey={dataKey} stroke="#22d3ee" dot={false} strokeWidth={2} name="Portfolio" />
         </LineChart>
       </ResponsiveContainer>

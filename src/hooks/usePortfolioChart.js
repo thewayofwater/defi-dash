@@ -83,16 +83,32 @@ export function usePortfolioChart(entries, poolMap = {}) {
       const apys = dateMap[date];
       let totalWeight = 0;
       let weightedSum = 0;
+      // Per-pool contribution to that day's weighted APY (in percentage points).
+      // Each entry's `contribution` = (weight / activeWeightSum) * apy.
+      // Surfaced into the chart point so the tooltip can render a breakdown
+      // sorted by the pool that drove the day's number most.
+      const activePools = [];
       for (const [poolId, w] of Object.entries(weightMap)) {
         if (apys[poolId] != null) {
           weightedSum += apys[poolId] * w;
           totalWeight += w;
+          activePools.push({ poolId, weight: w, apy: apys[poolId] });
         }
       }
       const weightedApy = totalWeight > 0 ? weightedSum / totalWeight : 0;
+      const contributions = activePools
+        .map((p) => ({
+          poolId: p.poolId,
+          // The fraction this pool represented of the active (data-having) weight
+          weightShare: totalWeight > 0 ? p.weight / totalWeight : 0,
+          apy: p.apy,
+          // Contribution in pp = weight share × apy
+          contributionPp: totalWeight > 0 ? (p.weight / totalWeight) * p.apy : 0,
+        }))
+        .sort((a, b) => b.contributionPp - a.contributionPp);
       // Daily compounding
       cumulative += weightedApy / 365;
-      return { date, weightedApy, cumulativeYield: cumulative };
+      return { date, weightedApy, cumulativeYield: cumulative, contributions };
     });
   }, [entries, perPool]);
 
