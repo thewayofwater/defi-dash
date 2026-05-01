@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import {
-  PieChart, Pie, Cell, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend,
+  PieChart, Pie, Cell, LineChart, Line, ReferenceLine, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
 import { useYieldComparison } from "../hooks/useYieldComparison";
 import { usePortfolioChart } from "../hooks/usePortfolioChart";
@@ -212,6 +212,14 @@ function WeightedYieldChart({ entries, poolMap }) {
   const isCumulative = mode === "cumulative";
   const dataKey = isCumulative ? "cumulativeYield" : "weightedApy";
 
+  // Window-average APY across the visible data. Used as a dashed reference
+  // line in APY mode so spikes/dips read against the typical value.
+  // For cumulative mode the line itself is monotonic; an average doesn't
+  // map to a meaningful horizontal reference, so we skip it there.
+  const meanApy = data.length
+    ? data.reduce((s, d) => s + (d.weightedApy || 0), 0) / data.length
+    : 0;
+
   return (
     <div>
       <div style={{ display: "flex", gap: 4, marginBottom: 12 }}>
@@ -232,6 +240,21 @@ function WeightedYieldChart({ entries, poolMap }) {
             content={<WeightedYieldTooltip poolMap={poolMap} isCumulative={isCumulative} />}
             cursor={{ stroke: "rgba(255,255,255,0.08)", strokeWidth: 1 }}
           />
+          {!isCumulative && data.length > 0 && (
+            <ReferenceLine
+              y={meanApy}
+              stroke="#94a3b8"
+              strokeDasharray="4 4"
+              strokeWidth={1}
+              label={{
+                value: `Avg ${meanApy.toFixed(2)}%`,
+                fill: "#94a3b8",
+                fontSize: 9,
+                fontFamily: mono,
+                position: "insideTopRight",
+              }}
+            />
+          )}
           <Line dataKey={dataKey} stroke="#22d3ee" dot={false} strokeWidth={2} name="Portfolio" />
         </LineChart>
       </ResponsiveContainer>
