@@ -680,8 +680,24 @@ export default function PortfolioPage() {
                 <tbody>
                   {pagedPools.map((p) => {
                     const inPortfolio = portfolioIds.has(p.id);
+                    // Morpho markets are 0x-prefixed 64-char hex hashes \u2014 link
+                    // directly to Morpho's app. Everything else (DeFiLlama
+                    // UUIDs, including the curated Morpho vault aggregators
+                    // DeFiLlama indexes under "morpho-blue") goes to
+                    // DeFiLlama's pool page. Same convention as the overview's
+                    // TrendingYields table.
+                    const isMorphoMarket = /^0x[0-9a-f]{64}$/i.test(p.id);
+                    const poolUrl = isMorphoMarket
+                      ? `https://app.morpho.org/${(p.chain || "").toLowerCase()}/market/${p.id}`
+                      : `https://defillama.com/yields/pool/${p.id}`;
                     return (
-                      <tr key={p.id}>
+                      <tr
+                        key={p.id}
+                        onClick={() => window.open(poolUrl, "_blank", "noopener,noreferrer")}
+                        style={{ cursor: "pointer" }}
+                        onMouseEnter={(e) => e.currentTarget.style.background = "rgba(255,255,255,0.025)"}
+                        onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
+                      >
                         <td style={{ ...TD, color: "#cbd5e1", fontWeight: 500 }}>
                           {p.symbol}
                           {p.poolMeta && p.poolMeta.startsWith("For buying PT") && (
@@ -697,7 +713,7 @@ export default function PortfolioPage() {
                         <td style={TD_NUM}>{fmt(p.tvlUsd)}</td>
                         <td style={TD}>
                           <button
-                            onClick={() => addPool(p.id)}
+                            onClick={(e) => { e.stopPropagation(); addPool(p.id); }}
                             disabled={inPortfolio || portfolio.length >= MAX_POOLS}
                             style={{
                               background: inPortfolio ? "rgba(74,222,128,0.1)" : "rgba(34,211,238,0.08)",
