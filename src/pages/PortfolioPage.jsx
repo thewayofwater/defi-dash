@@ -11,7 +11,7 @@ import { CATEGORY_COLORS } from "../utils/constants";
 const mono = "'JetBrains Mono', monospace";
 const ASSET_TABS = ["ETH", "BTC", "USD", "SOL", "HYPE", "EUR"];
 const PAGE_SIZE = 15;
-const MAX_POOLS = 10;
+const MAX_POOLS = 25;
 const LS_KEY = "defi-dash-portfolios";
 const AUTOSAVE_NAME = "__autosave__";
 
@@ -241,6 +241,10 @@ export default function PortfolioPage() {
   const [savedPortfolios, setSavedPortfolios] = useState([]);
   const [showSaveMenu, setShowSaveMenu] = useState(false);
   const [shareMsg, setShareMsg] = useState("");
+  // Tracks the name of the saved portfolio the user is currently editing,
+  // so we can offer a one-click "Update {name}" action without retyping.
+  // Cleared if the user starts a fresh portfolio.
+  const [loadedPortfolioName, setLoadedPortfolioName] = useState(null);
   const fileInputRef = useRef(null);
   const hasRestored = useRef(false);
 
@@ -294,12 +298,14 @@ export default function PortfolioPage() {
     else saved.push(entry);
     writeSavedPortfolios(saved);
     setSavedPortfolios(saved);
+    setLoadedPortfolioName(name); // mark this as the active portfolio for future one-click updates
     setShowSaveMenu(false);
   }, [portfolio, selectedAsset]);
 
   const loadPortfolio = useCallback((entry) => {
     setSelectedAsset(entry.selectedAsset);
     setPortfolio(entry.portfolio);
+    setLoadedPortfolioName(entry.name);
     setShowSaveMenu(false);
     setPage(0);
     setSearchQuery("");
@@ -309,7 +315,15 @@ export default function PortfolioPage() {
     const saved = loadSavedPortfolios().filter((s) => s.name !== name);
     writeSavedPortfolios(saved);
     setSavedPortfolios(saved);
+    // If the user just deleted the portfolio they were editing, drop the active mark.
+    setLoadedPortfolioName((prev) => (prev === name ? null : prev));
   }, []);
+
+  // Clear the loaded-portfolio mark when the user starts from scratch (empty portfolio).
+  // Avoids "Update X" lingering after Clear All.
+  useEffect(() => {
+    if (portfolio.length === 0) setLoadedPortfolioName(null);
+  }, [portfolio.length]);
 
   const sharePortfolio = useCallback(() => {
     const hash = encodePortfolioHash(selectedAsset, portfolio);
@@ -482,7 +496,7 @@ export default function PortfolioPage() {
       <div style={{ padding: "0 26px 40px", display: "flex", flexDirection: "column", gap: 24 }}>
         {/* Hero stats */}
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <StatCard label="Pools Selected" value={`${portfolio.length} / ${MAX_POOLS}`} />
+          <StatCard label="Pools Selected" value={portfolio.length} />
           <StatCard label="Weighted Avg APY" value={totalWeight > 0 ? `${weightedApy.toFixed(2)}%` : "—"} color="#22d3ee" />
           <StatCard label="Combined Pool TVL" value={totalTvl > 0 ? fmt(totalTvl) : "—"} />
           <StatCard label="Allocation" value={`${totalWeight}%`} color={totalWeight === 100 ? "#34d399" : totalWeight > 0 ? "#fbbf24" : "#4a5568"} />
@@ -619,13 +633,27 @@ export default function PortfolioPage() {
                   <div style={{
                     position: "absolute", top: "100%", left: 0, marginTop: 4, zIndex: 50,
                     background: "#131926", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 5,
-                    padding: 8, minWidth: 220, boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+                    padding: 8, minWidth: 240, boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
                   }}>
-                    {/* Save new */}
+                    {/* One-click update for the currently-loaded portfolio */}
+                    {loadedPortfolioName && portfolio.length > 0 && (
+                      <button
+                        onClick={() => savePortfolio(loadedPortfolioName)}
+                        style={{
+                          width: "100%", marginBottom: 8,
+                          background: "rgba(34,211,238,0.12)", border: "1px solid rgba(34,211,238,0.25)",
+                          borderRadius: 3, padding: "6px 10px", fontSize: 11, fontFamily: mono,
+                          color: "#22d3ee", cursor: "pointer", textAlign: "left",
+                        }}
+                      >
+                        {"↻"} Update "{loadedPortfolioName}"
+                      </button>
+                    )}
+                    {/* Save as new */}
                     <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
                       <input
                         type="text"
-                        placeholder="Portfolio name..."
+                        placeholder={loadedPortfolioName ? "Save as new..." : "Portfolio name..."}
                         id="portfolio-save-name"
                         style={{ flex: 1, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 3, padding: "4px 8px", fontSize: 10, fontFamily: mono, color: "#cbd5e1", outline: "none" }}
                         onKeyDown={(e) => { if (e.key === "Enter") savePortfolio(e.target.value.trim()); }}
@@ -644,14 +672,26 @@ export default function PortfolioPage() {
                     {savedPortfolios.filter((s) => s.name !== AUTOSAVE_NAME).length > 0 && (
                       <>
                         <div style={{ fontSize: 9, fontFamily: mono, color: "#4a5568", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Saved Portfolios</div>
-                        {savedPortfolios.filter((s) => s.name !== AUTOSAVE_NAME).map((s) => (
+                        {savedPortfolios.filter((s) => s.name !== AUTOSAVE_NAME).map((s) => {
+                          const isActive = s.name === loadedPortfolioName;
+                          return (
                           <div key={s.name} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderTop: "1px solid rgba(255,255,255,0.04)" }}>
                             <button
                               onClick={() => loadPortfolio(s)}
-                              style={{ background: "none", border: "none", color: "#cbd5e1", fontSize: 11, fontFamily: mono, cursor: "pointer", textAlign: "left", flex: 1, padding: "2px 0" }}
+                              style={{ background: "none", border: "none", color: isActive ? "#22d3ee" : "#cbd5e1", fontSize: 11, fontFamily: mono, cursor: "pointer", textAlign: "left", flex: 1, padding: "2px 0", fontWeight: isActive ? 600 : 400 }}
                             >
                               {s.name} <span style={{ color: "#4a5568", fontSize: 9 }}>({s.portfolio.length} pools · {s.selectedAsset})</span>
                             </button>
+                            {/* Per-row update: overwrite this saved entry with the current portfolio */}
+                            {portfolio.length > 0 && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); savePortfolio(s.name); }}
+                                title={`Overwrite "${s.name}" with current portfolio`}
+                                style={{ background: "none", border: "none", color: "#94a3b8", fontSize: 12, cursor: "pointer", padding: "0 4px" }}
+                              >
+                                {"\u21BB"}
+                              </button>
+                            )}
                             <button
                               onClick={(e) => { e.stopPropagation(); deletePortfolio(s.name); }}
                               style={{ background: "none", border: "none", color: "#f87171", fontSize: 12, cursor: "pointer", padding: "0 4px" }}
@@ -659,7 +699,8 @@ export default function PortfolioPage() {
                               {"\u00D7"}
                             </button>
                           </div>
-                        ))}
+                          );
+                        })}
                       </>
                     )}
                   </div>
