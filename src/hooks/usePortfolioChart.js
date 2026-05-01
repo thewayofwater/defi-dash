@@ -7,9 +7,12 @@ const YIELDS_URL = "/api/yields";
  * a weighted average timeseries based on portfolio allocations.
  *
  * @param {Array<{poolId: string, weight: number}>} entries
+ * @param {Object} poolMap optional poolId → pool record lookup. Used to extract
+ *                        chainId for Morpho-market history fetches (markets need
+ *                        chainId to disambiguate the same uniqueKey across chains).
  * @returns {{ data: Array<{date, weightedApy, cumulativeYield}>, loading: boolean }}
  */
-export function usePortfolioChart(entries) {
+export function usePortfolioChart(entries, poolMap = {}) {
   const [perPool, setPerPool] = useState({});
   const [loading, setLoading] = useState(false);
   const prevKey = useRef("");
@@ -26,14 +29,23 @@ export function usePortfolioChart(entries) {
     if (key === prevKey.current) return;
     prevKey.current = key;
 
+    // Morpho market IDs are 0x-prefixed 64-char hex hashes; they need a chainId
+    // appended to the chart query so the API can route to Morpho's GraphQL.
+    const isMorphoMarket = (id) => /^0x[0-9a-f]{64}$/i.test(id);
+
     setLoading(true);
     Promise.all(
-      poolIds.map((id) =>
-        fetch(`${YIELDS_URL}?chart=${id}`)
+      poolIds.map((id) => {
+        let url = `${YIELDS_URL}?chart=${id}`;
+        if (isMorphoMarket(id)) {
+          const chainId = poolMap[id]?.chainId || 1;
+          url += `&chainId=${chainId}`;
+        }
+        return fetch(url)
           .then((r) => r.json())
           .then((json) => ({ id, points: json.points || [] }))
-          .catch(() => ({ id, points: [] }))
-      )
+          .catch(() => ({ id, points: [] }));
+      })
     ).then((results) => {
       const map = {};
       results.forEach(({ id, points }) => {
@@ -42,7 +54,7 @@ export function usePortfolioChart(entries) {
       setPerPool(map);
       setLoading(false);
     });
-  }, [key, poolIds]);
+  }, [key, poolIds, poolMap]);
 
   const data = useMemo(() => {
     if (!entries.length || !Object.keys(perPool).length) return [];

@@ -1,6 +1,157 @@
 const DEFILLAMA_POOLS = "https://yields.llama.fi/pools";
 const DEFILLAMA_CHART = "https://yields.llama.fi/chart";
 const DEFILLAMA_PROTOCOLS = "https://api.llama.fi/protocols";
+const MORPHO_GRAPHQL = "https://api.morpho.org/graphql";
+
+// Chain id → display name (matches DeFiLlama's chain naming so Morpho markets
+// merge cleanly with the rest of the pool universe in the portfolio builder).
+const MORPHO_CHAIN_NAMES = {
+  1: "Ethereum",
+  8453: "Base",
+  42161: "Arbitrum",
+  10: "Optimism",
+  137: "Polygon",
+  130: "Unichain",
+  999: "HyperEVM",
+  143: "Monad",
+  988: "Plasma",
+  747474: "Katana",
+};
+
+// Pull listed Morpho Blue markets (loan/collateral pairs) and shape them into
+// the same pool schema the portfolio builder expects from DeFiLlama. Markets
+// are NOT on DeFiLlama (only the curated vault aggregators are), so we go
+// direct to Morpho's GraphQL. projectSlug stays "morpho-blue" so they group
+// with the vault aggregators in protocol-exposure breakdowns.
+// Per-market historical APY (and TVL) for the portfolio's weighted yield chart.
+// Morpho's `marketByUniqueKey` exposes daily-resolution series via historicalState.
+// supplyApy is fractional (0.04 = 4%); we convert to percent here so the shape
+// matches DeFiLlama's chart payload exactly.
+async function fetchMorphoMarketHistory(marketId, chainId) {
+  const query = `query MarketHistory($id: String!, $chainId: Int!) {
+    marketByUniqueKey(uniqueKey: $id, chainId: $chainId) {
+      historicalState {
+        supplyApy(options: { interval: DAY }) { x y }
+        supplyAssetsUsd(options: { interval: DAY }) { x y }
+      }
+    }
+  }`;
+  const resp = await fetch(MORPHO_GRAPHQL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, variables: { id: marketId, chainId } }),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!resp.ok) throw new Error(`Morpho history HTTP ${resp.status}`);
+  const json = await resp.json();
+  if (json.errors) throw new Error(`Morpho history GraphQL: ${json.errors[0].message}`);
+  const hist = json.data?.marketByUniqueKey?.historicalState;
+  if (!hist) return [];
+  const apySeries = hist.supplyApy || [];
+  const tvlSeries = hist.supplyAssetsUsd || [];
+  // Index TVL by timestamp so we can join. Series are typically ordered
+  // newest-first; we re-sort ascending and slice to last 365 days at the end.
+  const tvlByTs = new Map();
+  for (const p of tvlSeries) tvlByTs.set(p.x, p.y);
+  const points = apySeries
+    .map((p) => ({
+      date: new Date(p.x * 1000).toISOString().slice(0, 10),
+      apy: (Number(p.y) || 0) * 100, // fractional → percent
+      tvl: tvlByTs.get(p.x) || 0,
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(-365);
+  return points;
+}
+
+async function fetchMorphoMarkets() {
+  const query = `{
+    markets(
+      first: 500
+      orderBy: SupplyAssetsUsd
+      orderDirection: Desc
+      where: { supplyAssetsUsd_gte: 1000000, listed: true }
+    ) {
+      items {
+        marketId
+        chain { id }
+        loanAsset { symbol }
+        collateralAsset { symbol }
+        lltv
+        state {
+          supplyApy
+          netSupplyApy
+          supplyAssetsUsd
+          rewards {
+            asset { symbol }
+            supplyApr
+          }
+        }
+      }
+    }
+  }`;
+  try {
+    const resp = await fetch(MORPHO_GRAPHQL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!resp.ok) return [];
+    const json = await resp.json();
+    if (json.errors) {
+      console.error("Morpho markets query errors:", json.errors);
+      return [];
+    }
+    const items = json.data?.markets?.items || [];
+    return items
+      .filter((m) => m.collateralAsset && m.loanAsset && m.state)
+      .map((m) => {
+        const chainId = m.chain?.id;
+        const chainName = MORPHO_CHAIN_NAMES[chainId] || `chain ${chainId}`;
+        const loan = m.loanAsset.symbol;
+        const collateral = m.collateralAsset.symbol;
+        // LLTV is fixed-point with 18 decimals
+        const lltvPct = m.lltv ? (Number(m.lltv) / 1e18) * 100 : null;
+        const supplyApyBase = (m.state.supplyApy || 0) * 100;
+        const supplyApyNet = (m.state.netSupplyApy || 0) * 100;
+        // Aggregate any reward APRs (incentives layered on top of base lending APY)
+        const rewardApr = (m.state.rewards || []).reduce(
+          (s, r) => s + (Number(r.supplyApr) || 0) * 100,
+          0
+        );
+        const baseAsset = normalizeSymbol(loan, false, "single");
+        const stablecoin = baseAsset === "USD";
+        return {
+          id: m.marketId, // hash, used as the unique pool key
+          symbol: `${loan}/${collateral}`,
+          baseAsset,
+          project: "Morpho Blue",
+          projectSlug: "morpho-blue",
+          category: "Lending",
+          chain: chainName,
+          chainId, // needed for the per-market historical query (Phase B)
+          apy: supplyApyNet, // post-fee net rate to suppliers
+          apyBase: supplyApyBase,
+          apyReward: rewardApr,
+          tvlUsd: m.state.supplyAssetsUsd || 0,
+          apyPct1D: 0,
+          apyPct7D: 0,
+          apyPct30D: 0,
+          apyMean30d: 0,
+          stablecoin,
+          ilRisk: "no",
+          exposure: "single",
+          poolMeta: lltvPct != null ? `${collateral} @ ${lltvPct.toFixed(0)}% LLTV` : collateral,
+          prediction: null,
+        };
+      })
+      .filter((p) => p.baseAsset && p.apy > 0.01 && p.apy < 100);
+  } catch (err) {
+    console.error("Morpho markets fetch error:", err.message);
+    return [];
+  }
+}
 
 // Protocols we compare across
 const TARGET_PROJECTS = [
@@ -154,6 +305,18 @@ export default async function handler(req, res) {
 
   // If ?chart=<poolId>, return historical data for that pool
   if (chartPool) {
+    // Morpho market IDs are 0x-prefixed 64-char hex hashes (vs DeFiLlama's UUIDs).
+    // Route to Morpho's GraphQL historicalState. chainId required to disambiguate
+    // since the same uniqueKey can theoretically exist on multiple chains.
+    if (/^0x[0-9a-f]{64}$/i.test(chartPool)) {
+      const chainId = parseInt(url.searchParams.get("chainId") || "1", 10);
+      try {
+        const points = await fetchMorphoMarketHistory(chartPool, chainId);
+        return res.status(200).json({ points, source: "morpho-market" });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
     try {
       const resp = await fetch(`${DEFILLAMA_CHART}/${chartPool}`, { signal: AbortSignal.timeout(10000) });
       if (!resp.ok) throw new Error(`DeFiLlama chart API ${resp.status}`);
@@ -171,9 +334,12 @@ export default async function handler(req, res) {
 
   // Otherwise return all pools for comparison
   try {
-    const [poolsResp, protocolsResp] = await Promise.all([
+    // Markets are only fetched for the portfolio-builder universe (mode=all);
+    // the Compare page restricts to TARGET_PROJECTS so doesn't need them.
+    const [poolsResp, protocolsResp, morphoMarkets] = await Promise.all([
       fetch(DEFILLAMA_POOLS, { signal: AbortSignal.timeout(10000) }),
       fetch(DEFILLAMA_PROTOCOLS, { signal: AbortSignal.timeout(10000) }),
+      mode === "all" ? fetchMorphoMarkets() : Promise.resolve([]),
     ]);
     if (!poolsResp.ok) throw new Error(`DeFiLlama pools API ${poolsResp.status}`);
     const data = await poolsResp.json();
@@ -226,10 +392,14 @@ export default async function handler(req, res) {
       })
       .filter((p) => p.baseAsset); // exclude pools that don't map to any asset class
 
-    // Available base assets
-    const assets = [...new Set(pools.map((p) => p.baseAsset))].sort();
+    // Merge Morpho Blue markets (they're shaped to the same schema and already
+    // filtered for TVL/APY thresholds inside fetchMorphoMarkets).
+    const allPoolsMerged = [...pools, ...morphoMarkets];
 
-    return res.status(200).json({ pools, assets });
+    // Available base assets
+    const assets = [...new Set(allPoolsMerged.map((p) => p.baseAsset))].sort();
+
+    return res.status(200).json({ pools: allPoolsMerged, assets });
   } catch (err) {
     console.error("Yields API error:", err);
     return res.status(500).json({ error: err.message });

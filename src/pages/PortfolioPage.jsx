@@ -134,7 +134,7 @@ function ExposurePie({ portfolio, poolMap, groupBy, colorMap }) {
 
 /* ── Weighted Yield History Chart ── */
 function WeightedYieldChart({ entries, poolMap }) {
-  const { data, loading } = usePortfolioChart(entries);
+  const { data, loading } = usePortfolioChart(entries, poolMap);
   const [mode, setMode] = useState("apy");
 
   if (!entries.length) return <div style={{ color: "#4a5568", fontSize: 12, fontFamily: mono, textAlign: "center", padding: 60 }}>Add pools to see historical yield trend</div>;
@@ -195,12 +195,6 @@ function RiskMetrics({ portfolio, poolMap }) {
       ? pools.reduce((s, { pool, weight }) => s + ((pool.apyReward || 0) / Math.max(pool.apy, 0.01)) * weight, 0) / totalWeight * 100
       : 0;
 
-    // APY stability: count pools where current APY deviates >30% from 30d mean
-    const volatile = pools.filter(({ pool }) => {
-      if (!pool.apyMean30d || pool.apyMean30d === 0) return false;
-      return Math.abs(pool.apy - pool.apyMean30d) / pool.apyMean30d > 0.3;
-    }).length;
-
     return {
       hhi,
       hhiLabel: hhi > 0.5 ? "Concentrated" : hhi > 0.25 ? "Moderate" : "Diversified",
@@ -210,8 +204,6 @@ function RiskMetrics({ portfolio, poolMap }) {
       maxWeightColor: maxWeight > 50 ? "#f87171" : maxWeight > 30 ? "#fbbf24" : "#4ade80",
       rewardPct: rewardPct.toFixed(0),
       rewardColor: rewardPct > 60 ? "#f87171" : rewardPct > 30 ? "#fbbf24" : "#4ade80",
-      volatile,
-      volatileColor: volatile > 2 ? "#f87171" : volatile > 0 ? "#fbbf24" : "#4ade80",
       poolCount: pools.length,
     };
   }, [portfolio, poolMap]);
@@ -231,7 +223,6 @@ function RiskMetrics({ portfolio, poolMap }) {
       {card("Max Single Pool", `${metrics.maxWeight}%`, metrics.maxWeightColor)}
       {card("Chains", metrics.chains, metrics.chains >= 3 ? "#4ade80" : "#fbbf24")}
       {card("Reward Dependency", `${metrics.rewardPct}%`, metrics.rewardColor)}
-      {card("Volatile Pools", metrics.volatile, metrics.volatileColor)}
     </div>
   );
 }
