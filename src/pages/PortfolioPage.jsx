@@ -144,20 +144,21 @@ function WeightedYieldTooltip({ active, payload, label, poolMap, isCumulative })
   const main = isCumulative ? datum.cumulativeYield : datum.weightedApy;
   const mainLabel = isCumulative ? "Cumulative" : "Weighted APY";
   const contributions = datum.contributions || [];
-  const TOP_N = 8;
-  const visible = contributions.slice(0, TOP_N);
-  const hidden = contributions.length - visible.length;
   const symbolFor = (poolId) => {
     const p = poolMap[poolId];
-    if (!p) return poolId.slice(0, 10);
-    // Symbol + project distinguishes e.g. "USDC/cbBTC (Morpho Blue)"
-    return `${p.symbol}${p.project ? ` (${p.project})` : ""}`;
+    if (p) return `${p.symbol}${p.project ? ` (${p.project})` : ""}`;
+    // Pool isn't in the current catalog (likely filtered out: TVL < $1M, APY
+    // out of range, or delisted). The portfolio entry is "stale" — chart
+    // history still resolves but the pool's metadata is gone. Surface this
+    // clearly so the user can identify and remove it.
+    return `Stale pool · ${poolId.slice(0, 8)}…`;
   };
+  const hasStale = contributions.some((c) => !poolMap[c.poolId]);
   return (
     <div style={{
       background: "#131926", border: "1px solid rgba(255,255,255,0.07)",
       borderRadius: 5, padding: "10px 12px", fontFamily: mono, fontSize: 11,
-      color: "#e2e8f0", maxWidth: 360, boxShadow: "0 6px 18px rgba(0,0,0,0.5)",
+      color: "#e2e8f0", maxWidth: 400, boxShadow: "0 6px 18px rgba(0,0,0,0.5)",
     }}>
       <div style={{ color: "#94a3b8", marginBottom: 4 }}>{label}</div>
       <div style={{ marginBottom: 8 }}>
@@ -169,18 +170,30 @@ function WeightedYieldTooltip({ active, payload, label, poolMap, isCumulative })
           <div style={{ fontSize: 9, color: "#6b7a8d", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
             By contribution
           </div>
+          {/* Show all contributions — users want to see what's driving the
+              blend, even for 20+ pool portfolios. Tooltip is tall but readable
+              and the cursor stays inside the chart hover area while scanning. */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: "2px 8px", fontSize: 10, fontVariantNumeric: "tabular-nums" }}>
-            {visible.map((c) => (
-              <React.Fragment key={c.poolId}>
-                <span style={{ color: "#cbd5e1", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{symbolFor(c.poolId)}</span>
-                <span style={{ color: "#6b7a8d" }}>{(c.weightShare * 100).toFixed(0)}%</span>
-                <span style={{ color: "#94a3b8" }}>× {c.apy.toFixed(2)}%</span>
-                <span style={{ color: "#22d3ee" }}>= {c.contributionPp.toFixed(2)}pp</span>
-              </React.Fragment>
-            ))}
+            {contributions.map((c) => {
+              const stale = !poolMap[c.poolId];
+              return (
+                <React.Fragment key={c.poolId}>
+                  <span style={{
+                    color: stale ? "#fbbf24" : "#cbd5e1",
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    fontStyle: stale ? "italic" : "normal",
+                  }}>{symbolFor(c.poolId)}</span>
+                  <span style={{ color: "#6b7a8d" }}>{(c.weightShare * 100).toFixed(0)}%</span>
+                  <span style={{ color: "#94a3b8" }}>× {c.apy.toFixed(2)}%</span>
+                  <span style={{ color: "#22d3ee" }}>= {c.contributionPp.toFixed(2)}pp</span>
+                </React.Fragment>
+              );
+            })}
           </div>
-          {hidden > 0 && (
-            <div style={{ fontSize: 9, color: "#6b7a8d", marginTop: 4 }}>+{hidden} more</div>
+          {hasStale && (
+            <div style={{ fontSize: 9, color: "#fbbf24", marginTop: 6 }}>
+              ⚠ Stale pool(s) no longer in catalog. They contribute to the historical chart but aren't visible in your portfolio table. Clear All + rebuild to remove.
+            </div>
           )}
         </>
       )}
@@ -405,6 +418,20 @@ export default function PortfolioPage() {
     return map;
   }, [allPools]);
 
+  // Stale entries: portfolio pools no longer in the active catalog (TVL <$1M,
+  // APY out of range, or delisted). They contribute to the historical chart
+  // but aren't visible in the portfolio table — surfaced via banner so the
+  // user can identify and remove them. Only flag once the catalog has loaded
+  // (otherwise everything looks "stale" during initial load).
+  const stalePoolEntries = useMemo(() => {
+    if (!allPools.length) return [];
+    return portfolio.filter((e) => !poolMap[e.poolId]);
+  }, [portfolio, poolMap, allPools.length]);
+
+  const removeStalePools = useCallback(() => {
+    setPortfolio((prev) => prev.filter((e) => poolMap[e.poolId]));
+  }, [poolMap]);
+
   // Export/Import (needs poolMap)
   const exportPortfolio = useCallback(() => {
     const data = {
@@ -566,6 +593,63 @@ export default function PortfolioPage() {
             {totalWeight > 100
               ? `Allocation exceeds 100% by ${totalWeight - 100}%. Please reduce weights.`
               : `Allocation is ${totalWeight}% — ${100 - totalWeight}% unallocated.`}
+          </div>
+        )}
+
+        {/* Stale pool banner — pools in the saved portfolio that aren't in the
+            current catalog (likely filtered out by TVL/APY thresholds or
+            delisted). They're invisible in the portfolio table but still
+            contribute weight to the historical chart. */}
+        {stalePoolEntries.length > 0 && (
+          <div style={{
+            background: "rgba(251,191,36,0.06)",
+            border: "1px solid rgba(251,191,36,0.2)",
+            borderRadius: 6,
+            padding: "10px 16px",
+            fontSize: 11,
+            fontFamily: mono,
+            color: "#fbbf24",
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: 240 }}>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                  {stalePoolEntries.length} stale pool{stalePoolEntries.length === 1 ? "" : "s"} in your portfolio
+                </div>
+                <div style={{ color: "#cbd5e1", fontSize: 10, lineHeight: 1.5, marginBottom: 6 }}>
+                  No longer in the active catalog (TVL dropped below $1M, APY out of range, or delisted).
+                  They contribute to the weighted yield chart but aren't shown in the portfolio table —
+                  totaling <span style={{ color: "#fbbf24" }}>{stalePoolEntries.reduce((s, e) => s + (e.weight || 0), 0)}%</span> of your allocation.
+                </div>
+                <div style={{ fontSize: 10, color: "#94a3b8", lineHeight: 1.6 }}>
+                  {stalePoolEntries.slice(0, 5).map((e) => (
+                    <span key={e.poolId} style={{ display: "inline-block", marginRight: 12 }}>
+                      <span style={{ fontFamily: mono, color: "#cbd5e1" }}>{e.poolId.slice(0, 10)}…</span>
+                      <span style={{ color: "#6b7a8d", marginLeft: 4 }}>{e.weight}%</span>
+                    </span>
+                  ))}
+                  {stalePoolEntries.length > 5 && (
+                    <span style={{ color: "#6b7a8d" }}>+{stalePoolEntries.length - 5} more</span>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={removeStalePools}
+                style={{
+                  background: "rgba(251,191,36,0.15)",
+                  border: "1px solid rgba(251,191,36,0.3)",
+                  borderRadius: 4,
+                  padding: "6px 12px",
+                  fontSize: 10,
+                  fontFamily: mono,
+                  color: "#fbbf24",
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                  fontWeight: 600,
+                }}
+              >
+                Remove stale pools
+              </button>
+            </div>
           </div>
         )}
 
