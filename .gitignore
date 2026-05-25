@@ -4,3 +4,16 @@ dist/
 .DS_Store
 .env*
 .vercel
+
+# Local research artifacts (kept on disk, not for GitHub)
+defi-curator-research/
+memo/
+
+# Python venv / cache (if any local scripts exist)
+.venv/
+*.pyc
+__pycache__/
+
+# Claude tooling
+.claude/worktrees/
+.superpowers/
