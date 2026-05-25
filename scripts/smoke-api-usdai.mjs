@@ -42,5 +42,13 @@ const fromRepl    = d.loans.filter(l => l.attestedSource === "replacement-cost")
 console.log(`loans with attestedUsd: ${withAttested}/${d.loans.length} (nft=${fromNft}, replacement-cost=${fromRepl})`);
 if (withAttested === 0) { console.error("ZERO loans got attestedUsd — join is broken"); process.exit(1); }
 
+console.log("gpuRentals keys:", Object.keys(d.gpuRentals));
+const populated = Object.values(d.gpuRentals).filter(v => v.medianDph != null);
+console.log(`gpuRentals with medianDph: ${populated.length}/${Object.keys(d.gpuRentals).length}`);
+for (const [k, v] of Object.entries(d.gpuRentals)) {
+  console.log(`  ${k}: median=$${v.medianDph?.toFixed(2)} listings=${v.listingCount}`);
+}
+if (populated.length === 0) console.warn("WARN: zero Vast.ai medians populated (may be transient)");
+
 console.log("first loan:", JSON.stringify(firstLoan, null, 2));
 console.log("OK");

@@ -1,4 +1,4 @@
-import { lookupGpu, normalizeHardwareName } from "../src/utils/usdai-gpu-map.js";
+import { lookupGpu, normalizeHardwareName, distinctVastNames } from "../src/utils/usdai-gpu-map.js";
 
 const USDAI = "https://api.usd.ai/usdai";
 const LLAMA = "https://api.llama.fi/protocol/usd-ai";
@@ -48,6 +48,40 @@ async function fetchAllMetadata() {
     results.push(...rows.filter(Boolean));
   }
   return results;
+}
+
+async function fetchVastRentals(vastGpuName) {
+  // Vast.ai bundles are multi-GPU servers; `dph_total` is the bundle hourly rate.
+  // To get a per-GPU price we divide by `num_gpus`. We also keep `dph_total` order
+  // for sorting so we still get the cheapest bundles first.
+  const q = encodeURIComponent(JSON.stringify({
+    gpu_name: { eq: vastGpuName },
+    rentable: { eq: true },
+    order: [["dph_total", "asc"]],
+    limit: 200,
+  }));
+  try {
+    const r = await fetch(`https://cloud.vast.ai/api/v0/bundles/?q=${q}`, { signal: AbortSignal.timeout(10000) });
+    if (!r.ok) return { error: `Vast.ai ${vastGpuName} ${r.status}` };
+    const data = await r.json();
+    const offers = data?.offers || [];
+    if (!offers.length) return { medianDph: null, p25Dph: null, p75Dph: null, listingCount: 0 };
+    const perGpu = offers
+      .filter(o => Number.isFinite(Number(o.dph_total)) && Number.isFinite(Number(o.num_gpus)) && o.num_gpus > 0)
+      .map(o => Number(o.dph_total) / Number(o.num_gpus))
+      .filter(x => x > 0)
+      .sort((a, b) => a - b);
+    if (!perGpu.length) return { medianDph: null, p25Dph: null, p75Dph: null, listingCount: 0 };
+    const pick = (p) => perGpu[Math.min(perGpu.length - 1, Math.floor(perGpu.length * p))];
+    return {
+      medianDph: pick(0.50),
+      p25Dph:    pick(0.25),
+      p75Dph:    pick(0.75),
+      listingCount: perGpu.length,
+    };
+  } catch (e) {
+    return { error: e.message };
+  }
 }
 
 // Estimate attested USD by summing hardware count × GPU map replacementCost.
@@ -214,9 +248,22 @@ export default async function handler(req, res) {
   const loans = por_array.filter(x => x.type === "DEAL").map(parseLoanRow).map(loan => {
     const key = (loan.name || "").replace(/^NVIDIA\s+/i, "").trim();
     const meta = nameToMeta.get(key);
-    const attestedUsd = meta?.collateralValueUsd ?? estimateFromReplacementCost(loan.hardware);
+    // Enrich each hardware item with its GPU-map lookup (vastGpuName, replacementCost, defaultLifeYears).
+    const hardware = loan.hardware.map(h => {
+      const m = lookupGpu(h.name);
+      return {
+        name: h.name,
+        count: h.count,
+        percentage: h.percentage,
+        vastGpuName: m?.vast ?? null,
+        replacementCost: m?.replacementCost ?? null,
+        defaultLifeYears: m?.life ?? null,
+      };
+    });
+    const attestedUsd = meta?.collateralValueUsd ?? estimateFromReplacementCost(hardware);
     return {
       ...loan,
+      hardware,
       tokenId: meta?.tokenId ?? null,
       attestedUsd,
       attestedSource: meta ? "nft" : (attestedUsd != null ? "replacement-cost" : null),
@@ -224,6 +271,15 @@ export default async function handler(req, res) {
       manufacturer: meta?.manufacturer ?? null,
     };
   });
+
+  // Phase 2: fan out to Vast.ai for each distinct mapped GPU model in the loans.
+  const vastNames = distinctVastNames(loans.flatMap(l => l.hardware));
+  const rentalsArr = await Promise.all(vastNames.map(async (name) => {
+    const r = await fetchVastRentals(name);
+    if (r.error) warnings.push(`vast ${name}: ${r.error}`);
+    return [name, { ...r, updatedAt: new Date().toISOString() }];
+  }));
+  const gpuRentals = Object.fromEntries(rentalsArr);
 
   // Supply endpoints return {result: "decimal string"} (NOT 18-decimal wei).
   const parseDecimal = (v) => {
@@ -254,7 +310,7 @@ export default async function handler(req, res) {
     tvlHistory,
     loans,
     tbills,
-    gpuRentals: {},  // populated in Task 4
+    gpuRentals,
     warnings,
   });
 }

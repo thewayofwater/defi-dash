@@ -3,10 +3,10 @@ import { lookupGpu, normalizeHardwareName, distinctVastNames } from "../src/util
 const cases = [
   ["B200 [96] (Escrowed)", "B200", "B200"],
   ["NVIDIA B300 [72]",     "B300", null],
-  ["RTX PRO 6000 [1]",     "RTX PRO 6000", null],
-  ["RTX PRO 6000 Blackwell", "RTX PRO 6000 Blackwell", null],
+  ["RTX PRO 6000 [1]",     "RTX PRO 6000", "RTX PRO 6000 WS"],
+  ["RTX PRO 6000 Blackwell", "RTX PRO 6000 Blackwell", "RTX PRO 6000 WS"],
   ["H200 [75]",            "H200", "H200"],
-  ["RTX 5090 [15]",        "RTX 5090", "RTX_5090"],
+  ["RTX 5090 [15]",        "RTX 5090", "RTX 5090"],
 ];
 
 let failed = 0;
@@ -25,7 +25,7 @@ const distinct = distinctVastNames([
   { name: "B300 [72]" },
   { name: "RTX 5090 [15]" },
 ]);
-const ok = distinct.length === 3 && distinct.includes("B200") && distinct.includes("H200") && distinct.includes("RTX_5090");
+const ok = distinct.length === 3 && distinct.includes("B200") && distinct.includes("H200") && distinct.includes("RTX 5090");
 console.log(`${ok ? "PASS" : "FAIL"}  distinctVastNames → ${JSON.stringify(distinct)}`);
 if (!ok) failed++;
 
