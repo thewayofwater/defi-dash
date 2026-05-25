@@ -36,5 +36,11 @@ const deployedCount = d.loans.filter(l => l.isDeployed).length;
 const upcomingCount = d.loans.filter(l => !l.isDeployed).length;
 console.log(`deployed=${deployedCount} upcoming=${upcomingCount}`);
 
+const withAttested = d.loans.filter(l => l.attestedUsd != null).length;
+const fromNft     = d.loans.filter(l => l.attestedSource === "nft").length;
+const fromRepl    = d.loans.filter(l => l.attestedSource === "replacement-cost").length;
+console.log(`loans with attestedUsd: ${withAttested}/${d.loans.length} (nft=${fromNft}, replacement-cost=${fromRepl})`);
+if (withAttested === 0) { console.error("ZERO loans got attestedUsd — join is broken"); process.exit(1); }
+
 console.log("first loan:", JSON.stringify(firstLoan, null, 2));
 console.log("OK");

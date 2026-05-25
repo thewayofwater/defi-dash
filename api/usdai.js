@@ -1,9 +1,69 @@
+import { lookupGpu, normalizeHardwareName } from "../src/utils/usdai-gpu-map.js";
+
 const USDAI = "https://api.usd.ai/usdai";
 const LLAMA = "https://api.llama.fi/protocol/usd-ai";
 
 // Stage codes confirmed via proof-of-reserves probe (see plan Task 0 notes).
 // Update if USDai changes the schema.
 const STAGE_DEPLOYED = 6;
+
+// Verified working tokenId ranges on metadata.usd.ai/v1/<id> (see plan notes).
+// Generous upper bounds — fetcher tolerates 404s.
+const TOKEN_ID_RANGES = [
+  [101, 220],
+  [251, 262],
+  [301, 353],
+  [401, 410],
+  [1001, 1010],
+];
+
+async function fetchMetadata(tokenId) {
+  try {
+    const r = await fetch(`https://metadata.usd.ai/v1/${tokenId}`, { signal: AbortSignal.timeout(4000) });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const attrs = Object.fromEntries((j.attributes || []).map(a => [a.trait_type, a.value]));
+    return {
+      tokenId,
+      name: j.name,
+      collateralValueUsd: typeof attrs["Collateral Value USD"] === "number" ? attrs["Collateral Value USD"] : null,
+      usefulLifeDays: typeof attrs["Useful Life (days)"] === "number" ? attrs["Useful Life (days)"] : null,
+      quantity: typeof attrs["Quantity"] === "number" ? attrs["Quantity"] : null,
+      manufacturer: attrs["Manufacturer"] || null,
+    };
+  } catch { return null; }
+}
+
+// Fetch all tokens across ranges with bounded concurrency.
+async function fetchAllMetadata() {
+  const ids = [];
+  for (const [lo, hi] of TOKEN_ID_RANGES) {
+    for (let i = lo; i <= hi; i++) ids.push(i);
+  }
+  const results = [];
+  const CONCURRENCY = 12;
+  for (let i = 0; i < ids.length; i += CONCURRENCY) {
+    const batch = ids.slice(i, i + CONCURRENCY);
+    const rows = await Promise.all(batch.map(fetchMetadata));
+    results.push(...rows.filter(Boolean));
+  }
+  return results;
+}
+
+// Estimate attested USD by summing hardware count × GPU map replacementCost.
+// Fallback when no NFT metadata match is found by name.
+function estimateFromReplacementCost(hardware) {
+  if (!Array.isArray(hardware)) return null;
+  let total = 0, anyHit = false;
+  for (const h of hardware) {
+    const m = lookupGpu(h?.name);
+    if (m?.replacementCost != null && h.count) {
+      total += m.replacementCost * h.count;
+      anyHit = true;
+    }
+  }
+  return anyHit ? total : null;
+}
 
 async function fetchJson(url, timeoutMs = 8000) {
   const resp = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
@@ -135,8 +195,35 @@ export default async function handler(req, res) {
   const tvlHistory = buildTvlHistory(usdaiHist, llama);
 
   const por_array = por || [];
-  const loans = por_array.filter(x => x.type === "DEAL").map(parseLoanRow);
+
+  // Fetch NFT metadata across known tokenId ranges; build a name → meta index.
+  // Names are normalized (strip "NVIDIA " prefix) on both sides so e.g.
+  //   metadata "NVIDIA H200 [75]"  ↔  loan "H200 [75]"
+  const metadataList = await safe(fetchAllMetadata(), "metadata", warnings) || [];
+  const nameToMeta = new Map();
+  for (const m of metadataList) {
+    if (!m.name || m.collateralValueUsd == null) continue;
+    const key = m.name.replace(/^NVIDIA\s+/i, "").trim();
+    const prev = nameToMeta.get(key);
+    // If multiple NFTs share a name, prefer the one with highest collateral value
+    // (the aggregate roll-up NFT vs per-server NFTs).
+    if (!prev || m.collateralValueUsd > prev.collateralValueUsd) nameToMeta.set(key, m);
+  }
+
   const tbills = por_array.filter(x => x.type === "TBILL").map(parseTbillRow);
+  const loans = por_array.filter(x => x.type === "DEAL").map(parseLoanRow).map(loan => {
+    const key = (loan.name || "").replace(/^NVIDIA\s+/i, "").trim();
+    const meta = nameToMeta.get(key);
+    const attestedUsd = meta?.collateralValueUsd ?? estimateFromReplacementCost(loan.hardware);
+    return {
+      ...loan,
+      tokenId: meta?.tokenId ?? null,
+      attestedUsd,
+      attestedSource: meta ? "nft" : (attestedUsd != null ? "replacement-cost" : null),
+      attestedUsefulLifeDays: meta?.usefulLifeDays ?? null,
+      manufacturer: meta?.manufacturer ?? null,
+    };
+  });
 
   // Supply endpoints return {result: "decimal string"} (NOT 18-decimal wei).
   const parseDecimal = (v) => {
