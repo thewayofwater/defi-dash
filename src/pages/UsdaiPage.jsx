@@ -271,9 +271,14 @@ export default function UsdaiPage() {
 
       <div style={{ padding: "20px 26px", display: "flex", flexDirection: "column", gap: 24 }} key={refreshKey}>
         {data?.warnings?.length > 0 && (
-          <div style={{ fontSize: 11, fontFamily: mono, color: "#fbbf24", padding: "6px 10px", border: "1px solid rgba(251,191,36,0.2)", borderRadius: 5, background: "rgba(251,191,36,0.05)" }}>
-            {data.warnings.length} partial data warning(s): {data.warnings.slice(0,3).join(" · ")}
-          </div>
+          <details style={{ fontSize: 11, fontFamily: mono, color: "#fbbf24", padding: "8px 12px", border: "1px solid rgba(251,191,36,0.2)", borderRadius: 5, background: "rgba(251,191,36,0.04)" }}>
+            <summary style={{ cursor: "pointer" }}>
+              ⚠ {data.warnings.length} partial data warning(s) — click to expand
+            </summary>
+            <ul style={{ margin: "6px 0 0 14px", padding: 0, color: "#fde68a" }}>
+              {data.warnings.map((w, i) => <li key={i} style={{ marginTop: 2 }}>{w}</li>)}
+            </ul>
+          </details>
         )}
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
