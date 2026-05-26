@@ -281,6 +281,34 @@ export default defineConfig(({ mode }) => {
         },
       },
       {
+        name: "usdai-proxy",
+        configureServer(server) {
+          server.middlewares.use("/api/usdai", async (req, res) => {
+            try {
+              const usdaiHandler = await import("./api/usdai.js");
+              const fakeRes = {
+                statusCode: 200,
+                headers: {},
+                setHeader(k, v) { this.headers[k] = v; },
+                status(code) { this.statusCode = code; return this; },
+                json(data) {
+                  res.statusCode = this.statusCode;
+                  Object.entries(this.headers).forEach(([k, v]) => res.setHeader(k, v));
+                  res.setHeader("Content-Type", "application/json");
+                  res.end(JSON.stringify(data));
+                },
+              };
+              await usdaiHandler.default(req, fakeRes);
+            } catch (err) {
+              console.error("USDai proxy error:", err);
+              res.statusCode = 500;
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({ error: err.message }));
+            }
+          });
+        },
+      },
+      {
         name: "hyperliquid-proxy",
         configureServer(server) {
           server.middlewares.use("/api/hyperliquid", async (req, res) => {

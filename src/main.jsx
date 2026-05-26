@@ -10,6 +10,7 @@ import PortfolioPage from "./pages/PortfolioPage";
 import MaplePage from "./pages/MaplePage";
 import HyperliquidPage from "./pages/HyperliquidPage";
 import SparklendPage from "./pages/SparklendPage";
+import UsdaiPage from "./pages/UsdaiPage";
 import WbtcPage from "./pages/WbtcPage";
 import GovernancePage from "./pages/GovernancePage";
 import NavBar, { COLLAPSED_W } from "./components/NavBar";
@@ -27,6 +28,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
           <Route path="/maple" element={<MaplePage />} />
           <Route path="/hyperliquid" element={<HyperliquidPage />} />
           <Route path="/sparklend" element={<SparklendPage />} />
+          <Route path="/usdai" element={<UsdaiPage />} />
           <Route path="/wbtc" element={<WbtcPage />} />
           <Route path="/governance" element={<GovernancePage />} />
           <Route path="/compare" element={<ComparePage />} />
