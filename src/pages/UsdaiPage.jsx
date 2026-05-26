@@ -1,9 +1,11 @@
 import React from "react";
 import {
   ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  BarChart, Bar, Legend,
 } from "recharts";
 import { useUsdaiData } from "../hooks/useUsdaiData";
 import { SectionHeader, LoadingSpinner, ModuleCard } from "../components/Shared";
+import { DCF_DEFAULTS, aggregateByModel, modelComparison } from "../utils/usdai-dcf";
 
 const UsdaiGlobe = React.lazy(() => import("../components/UsdaiGlobe"));
 
@@ -136,6 +138,20 @@ function LoansTable({ loans, selectedId, onSelect, accent }) {
   );
 }
 
+function Slider({ label, value, min, max, step, fmt, onChange, accent }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 140 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, fontFamily: mono, color: "#94a3b8" }}>
+        <span>{label}</span>
+        <span style={{ color: accent }}>{fmt ? fmt(value) : value}</span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={value}
+             onChange={(e) => onChange(Number(e.target.value))}
+             style={{ accentColor: accent, width: "100%" }} />
+    </div>
+  );
+}
+
 function Kpi({ label, value, sub, accent }) {
   return (
     <div style={{
@@ -180,6 +196,39 @@ export default function UsdaiPage() {
     const loan = (data?.loans || []).find(l => l.documentId === point.id);
     if (loan) handleSelectLoan(loan);
   }, [data, handleSelectLoan]);
+
+  const [dcfParams, setDcfParams] = React.useState(DCF_DEFAULTS);
+  const [assumptionsOpen, setAssumptionsOpen] = React.useState(true);
+
+  const modelRows = React.useMemo(() => {
+    const aggs = aggregateByModel(data?.loans || []);
+    return aggs.map(a => {
+      const cmp = modelComparison({
+        vastGpuName: a.vastGpuName,
+        replacementCost: a.replacementCost,
+        rentals: data?.gpuRentals,
+        attestedPerUnit: a.attestedPerUnit,
+        params: dcfParams,
+      });
+      return {
+        model: a.model,
+        units: a.units,
+        vastGpuName: a.vastGpuName,
+        medianDph: data?.gpuRentals?.[a.vastGpuName]?.medianDph ?? null,
+        listingCount: data?.gpuRentals?.[a.vastGpuName]?.listingCount ?? 0,
+        attested: cmp.attested,
+        implied: cmp.implied,
+        gap: cmp.gap,
+        gapPct: cmp.gapPct,
+      };
+    }).filter(r => r.attested != null || r.implied != null);
+  }, [data, dcfParams]);
+
+  const chartRows = modelRows.map(r => ({
+    model: r.model,
+    Attested: r.attested,
+    Implied: r.implied,
+  }));
 
   if (error) {
     return (
@@ -283,6 +332,90 @@ export default function UsdaiPage() {
               <UsdaiGlobe ref={globeRef} points={globePoints} onPointClick={handleDotClick} accent={USDAI_ACCENT} />
             </React.Suspense>
           </div>
+        </ModuleCard>
+
+        <ModuleCard>
+          <SectionHeader
+            title="GPU Collateral Cross-Check"
+            subtitle="USDai-attested $/unit vs DCF-implied $/unit from live Vast.ai rentals" />
+
+          <div style={{ marginBottom: 14 }}>
+            <button onClick={() => setAssumptionsOpen(o => !o)}
+              style={{ background: "transparent", border: "1px solid rgba(255,255,255,0.08)", color: "#94a3b8", fontFamily: mono, fontSize: 11, padding: "5px 10px", borderRadius: 5, cursor: "pointer", marginBottom: 10 }}>
+              {assumptionsOpen ? "▾" : "▸"} Assumptions
+            </button>
+            {assumptionsOpen && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14, padding: "10px 12px", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 5, background: "rgba(255,255,255,0.015)" }}>
+                <Slider label="Utilization"     value={dcfParams.utilization}    min={0.50} max={0.95} step={0.01}
+                        fmt={v => `${(v*100).toFixed(0)}%`}
+                        onChange={v => setDcfParams(p => ({ ...p, utilization: v }))} accent={USDAI_ACCENT} />
+                <Slider label="Discount rate"    value={dcfParams.discountRate}   min={0.05} max={0.30} step={0.01}
+                        fmt={v => `${(v*100).toFixed(0)}%`}
+                        onChange={v => setDcfParams(p => ({ ...p, discountRate: v }))} accent={USDAI_ACCENT} />
+                <Slider label="Useful life"      value={dcfParams.usefulLifeYears} min={2} max={6} step={1}
+                        fmt={v => `${v}y`}
+                        onChange={v => setDcfParams(p => ({ ...p, usefulLifeYears: v }))} accent={USDAI_ACCENT} />
+                <Slider label="Residual %"       value={dcfParams.residualPct}    min={0} max={0.50} step={0.01}
+                        fmt={v => `${(v*100).toFixed(0)}%`}
+                        onChange={v => setDcfParams(p => ({ ...p, residualPct: v }))} accent={USDAI_ACCENT} />
+                <Slider label="Annual decline"   value={dcfParams.annualDecline}  min={0} max={0.50} step={0.01}
+                        fmt={v => `${(v*100).toFixed(0)}%`}
+                        onChange={v => setDcfParams(p => ({ ...p, annualDecline: v }))} accent={USDAI_ACCENT} />
+              </div>
+            )}
+          </div>
+
+          {Object.keys(data?.gpuRentals || {}).length === 0 && (
+            <div style={{ padding: 16, fontFamily: mono, fontSize: 11, color: "#fbbf24", background: "rgba(251,191,36,0.04)", borderRadius: 5, marginBottom: 12 }}>
+              No Vast.ai rental data available — implied values can't be computed.
+            </div>
+          )}
+
+          <div style={{ width: "100%", height: 260 }}>
+            <ResponsiveContainer>
+              <BarChart data={chartRows} margin={{ top: 12, right: 12, left: 8, bottom: 0 }}>
+                <CartesianGrid stroke="rgba(255,255,255,0.04)" />
+                <XAxis dataKey="model" tick={{ fill: "#6b7a8d", fontSize: 10, fontFamily: mono }} />
+                <YAxis tickFormatter={fmtUsdShort} tick={{ fill: "#6b7a8d", fontSize: 10, fontFamily: mono }} />
+                <Tooltip {...tooltipStyle} formatter={(v) => fmtUsdShort(v)} />
+                <Legend wrapperStyle={{ fontSize: 10, fontFamily: mono }} />
+                <Bar dataKey="Attested" fill="#22d3ee" />
+                <Bar dataKey="Implied"  fill={USDAI_ACCENT} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 12 }}>
+            <thead>
+              <tr>
+                <th style={th}>MODEL</th>
+                <th style={thR}>UNITS</th>
+                <th style={thR}>VAST $/HR</th>
+                <th style={thR}>LISTINGS</th>
+                <th style={thR}>ATTESTED $/U</th>
+                <th style={thR}>IMPLIED $/U</th>
+                <th style={thR}>GAP</th>
+              </tr>
+            </thead>
+            <tbody>
+              {modelRows.map(r => (
+                <tr key={r.model}>
+                  <td style={td}>{r.model}</td>
+                  <td style={tdR}>{r.units}</td>
+                  <td style={tdR}>{r.medianDph != null ? `$${r.medianDph.toFixed(2)}` : "—"}</td>
+                  <td style={tdR}>{r.listingCount || "—"}</td>
+                  <td style={tdR}>{fmtUsdShort(r.attested)}</td>
+                  <td style={tdR}>{r.implied != null ? fmtUsdShort(r.implied) : "—"}</td>
+                  <td style={{ ...tdR, color: r.gapPct == null ? "#4f5e6f" : (r.gapPct >= 0 ? "#22d3ee" : "#f87171") }}>
+                    {r.gapPct == null ? "—" : `${(r.gapPct * 100).toFixed(0)}%`}
+                  </td>
+                </tr>
+              ))}
+              {modelRows.length === 0 && (
+                <tr><td colSpan={7} style={{ ...td, color: "#4f5e6f", textAlign: "center", padding: 16 }}>No data</td></tr>
+              )}
+            </tbody>
+          </table>
         </ModuleCard>
 
         <div style={{ textAlign: "center", padding: "12px 0", fontSize: 10, color: "#3a4a5a", fontFamily: mono, borderTop: "1px solid rgba(255,255,255,0.025)" }}>
