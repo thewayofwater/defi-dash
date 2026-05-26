@@ -42,14 +42,14 @@ function fmtTerm(termSeconds) {
   return `${d}d`;
 }
 
-function LoansTable({ loans, selectedId, onSelect, accent }) {
+function LoansTable({ groups, selectedKey, onSelect, accent }) {
   const [tab, setTab] = React.useState("deployed");
 
   const buckets = React.useMemo(() => {
-    const d = loans.filter(l => l.isDeployed);
-    const u = loans.filter(l => !l.isDeployed);
+    const d = groups.filter(g => g.isDeployed);
+    const u = groups.filter(g => !g.isDeployed);
     return { deployed: d, upcoming: u };
-  }, [loans]);
+  }, [groups]);
 
   const rows = buckets[tab] || [];
 
@@ -82,43 +82,54 @@ function LoansTable({ loans, selectedId, onSelect, accent }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map(loan => {
-              const isSel = loan.documentId === selectedId;
-              const coverage = (loan.attestedUsd && loan.principal) ? (loan.attestedUsd / loan.principal) : null;
+            {rows.map(g => {
+              const isSel = g.groupKey === selectedKey;
+              const coverage = (g.attestedUsd && g.principal) ? (g.attestedUsd / g.principal) : null;
               return (
-                <React.Fragment key={loan.documentId}>
-                  <tr onClick={() => onSelect(loan)}
+                <React.Fragment key={g.groupKey}>
+                  <tr onClick={() => onSelect(g)}
                       style={{ cursor: "pointer", background: isSel ? `${accent}14` : undefined }}>
                     <td style={td}>
-                      {loan.name}
-                      {loan.isEscrowed && <span style={{ marginLeft: 6, color: "#94a3b8", fontSize: 10 }}>(Escrowed)</span>}
+                      {g.name}
+                      {g.isEscrowed && <span style={{ marginLeft: 6, color: "#94a3b8", fontSize: 10 }}>(Escrowed)</span>}
+                      {g.loanCount > 1 && <span style={{ marginLeft: 6, color: "#4f5e6f", fontSize: 10 }}>· {g.loanCount} loans</span>}
                     </td>
-                    <td style={tdR}>{loan.apr != null ? `${loan.apr.toFixed(1)}%` : "—"}</td>
-                    <td style={tdR}>{fmtUsdShort(loan.principal)}</td>
+                    <td style={tdR}>{g.apr != null ? `${g.apr.toFixed(1)}%` : "—"}</td>
+                    <td style={tdR}>{fmtUsdShort(g.principal)}</td>
                   </tr>
                   {isSel && (
                     <tr>
                       <td colSpan={3} style={{ ...td, background: "rgba(255,255,255,0.02)", padding: "10px 8px" }}>
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 11 }}>
-                          <div><span style={dim}>Borrower:</span> {shortAddr(loan.borrower)}</div>
-                          <div><span style={dim}>Location:</span> {loan.location?.name || "—"}</div>
-                          <div><span style={dim}>Term:</span> {fmtTerm(loan.termSeconds)}</div>
-                          <div><span style={dim}>Off-take:</span> {loan.offTake || "—"}</div>
                           <div>
-                            <span style={dim}>Attested $:</span> {fmtUsdShort(loan.attestedUsd)}
-                            {loan.attestedSource === "replacement-cost" && (
+                            <span style={dim}>Borrower:</span> {shortAddr(g.borrower)}
+                            {g.borrowers?.length > 1 && <span style={{ ...dim, fontSize: 9, marginLeft: 4 }}>(+{g.borrowers.length - 1})</span>}
+                          </div>
+                          <div><span style={dim}>Location:</span> {g.location?.name || "—"}</div>
+                          <div><span style={dim}>Term:</span> {fmtTerm(g.termSeconds)}</div>
+                          <div><span style={dim}>Off-take:</span> {g.offTake || "—"}</div>
+                          <div>
+                            <span style={dim}>Attested $:</span> {fmtUsdShort(g.attestedUsd)}
+                            {g.attestedSource === "replacement-cost" && (
                               <span style={{ ...dim, fontSize: 9, marginLeft: 4 }}>(est)</span>
                             )}
                           </div>
                           <div>
                             <span style={dim}>Coverage:</span> {coverage != null ? `${(coverage * 100).toFixed(0)}%` : "—"}
                           </div>
-                          {loan.tokenId != null && (
+                          {g.hardware?.length > 0 && (
+                            <div style={{ gridColumn: "1 / -1", ...dim, fontSize: 10 }}>
+                              Hardware: {g.hardware.map(h => `${h.name} ×${h.count}`).join(" · ")}
+                            </div>
+                          )}
+                          {g.tokenIds?.length > 0 && (
                             <div style={{ gridColumn: "1 / -1" }}>
-                              <a href={`https://metadata.usd.ai/v1/${loan.tokenId}`} target="_blank" rel="noreferrer"
-                                 style={{ color: accent, fontSize: 10 }}>
-                                NFT #{loan.tokenId} ↗
-                              </a>
+                              {g.tokenIds.map(tid => (
+                                <a key={tid} href={`https://metadata.usd.ai/v1/${tid}`} target="_blank" rel="noreferrer"
+                                   style={{ color: accent, fontSize: 10, marginRight: 10 }}>
+                                  NFT #{tid} ↗
+                                </a>
+                              ))}
                             </div>
                           )}
                         </div>
@@ -169,33 +180,33 @@ function Kpi({ label, value, sub, accent }) {
 
 export default function UsdaiPage() {
   const { data, loading, error, refreshing, lastUpdated, refreshKey, refresh } = useUsdaiData();
-  const [selectedLoanId, setSelectedLoanId] = React.useState(null);
+  const [selectedGroupKey, setSelectedGroupKey] = React.useState(null);
   const globeRef = React.useRef(null);
 
   const globePoints = React.useMemo(() => {
-    return (data?.loans || [])
-      .filter(l => l.location)
-      .map(l => ({
-        id: l.documentId,
-        lat: l.location.lat,
-        lng: l.location.lng,
-        size: Math.min(0.05, Math.max(0.005, (l.principal || 0) / 4e8)),
-        color: l.isDeployed ? USDAI_ACCENT : (l.isEscrowed ? "#fbbf24" : "#6b7a8d"),
-        label: `${l.name}<br/>${fmtUsdShort(l.principal)} · ${l.location.name}`,
+    return (data?.loanGroups || [])
+      .filter(g => g.location)
+      .map(g => ({
+        id: g.groupKey,
+        lat: g.location.lat,
+        lng: g.location.lng,
+        size: Math.min(0.06, Math.max(0.008, (g.principal || 0) / 5e8)),
+        color: g.isDeployed ? USDAI_ACCENT : (g.isEscrowed ? "#fbbf24" : "#6b7a8d"),
+        label: `${g.name}<br/>${fmtUsdShort(g.principal)} · ${g.location.name}${g.loanCount > 1 ? `<br/>${g.loanCount} loans` : ""}`,
       }));
   }, [data]);
 
-  const handleSelectLoan = React.useCallback((loan) => {
-    setSelectedLoanId(prev => prev === loan.documentId ? null : loan.documentId);
-    if (loan.location && globeRef.current?.spinTo) {
-      globeRef.current.spinTo(loan.location.lat, loan.location.lng);
+  const handleSelectGroup = React.useCallback((g) => {
+    setSelectedGroupKey(prev => prev === g.groupKey ? null : g.groupKey);
+    if (g.location && globeRef.current?.spinTo) {
+      globeRef.current.spinTo(g.location.lat, g.location.lng);
     }
   }, []);
 
   const handleDotClick = React.useCallback((point) => {
-    const loan = (data?.loans || []).find(l => l.documentId === point.id);
-    if (loan) handleSelectLoan(loan);
-  }, [data, handleSelectLoan]);
+    const g = (data?.loanGroups || []).find(x => x.groupKey === point.id);
+    if (g) handleSelectGroup(g);
+  }, [data, handleSelectGroup]);
 
   const [dcfParams, setDcfParams] = React.useState(DCF_DEFAULTS);
   const [assumptionsOpen, setAssumptionsOpen] = React.useState(true);
@@ -321,12 +332,12 @@ export default function UsdaiPage() {
         </ModuleCard>
 
         <ModuleCard>
-          <SectionHeader title="Loans" subtitle={`${(data?.loans || []).length} loans · click a row for detail`} />
+          <SectionHeader title="Loans" subtitle={`${(data?.loanGroups || []).length} loan groups · ${(data?.loans || []).length} underlying loans · click a row for detail`} />
           <div style={{ display: "grid", gridTemplateColumns: "minmax(380px, 0.42fr) 0.58fr", gap: 16 }}>
             <LoansTable
-              loans={data?.loans || []}
-              selectedId={selectedLoanId}
-              onSelect={handleSelectLoan}
+              groups={data?.loanGroups || []}
+              selectedKey={selectedGroupKey}
+              onSelect={handleSelectGroup}
               accent={USDAI_ACCENT}
             />
             <React.Suspense fallback={

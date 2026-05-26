@@ -84,6 +84,69 @@ async function fetchVastRentals(vastGpuName) {
   }
 }
 
+// Aggregate raw loans into rollup rows keyed by `group` field. USDai's UI
+// shows 7 individual "RTX PRO 6000 [1]" loans as a single "RTX PRO 6000 [7]"
+// row; the `group` field is the canonical key for this rollup.
+function aggregateLoanGroups(loans) {
+  const byKey = new Map();
+  for (const l of loans) {
+    const key = l.group || l.name || l.documentId;
+    if (!key) continue;
+    const e = byKey.get(key) || {
+      groupKey: key,
+      name: l.group || l.name,
+      stage: l.stage,
+      isDeployed: l.isDeployed,
+      isEscrowed: false,
+      escrowedTypes: new Set(),
+      borrowers: new Set(),
+      apr: l.apr,
+      termSeconds: l.termSeconds,
+      termDays: l.termDays,
+      offTake: l.offTake,
+      location: l.location,
+      chain: l.chain,
+      principal: 0,
+      attestedUsd: 0,
+      attestedSourceMix: { nft: 0, "replacement-cost": 0 },
+      hardware: new Map(),  // name → { name, count, vastGpuName, replacementCost, defaultLifeYears }
+      loanCount: 0,
+      documentIds: [],
+      tokenIds: new Set(),
+    };
+    e.loanCount += 1;
+    e.documentIds.push(l.documentId);
+    if (l.tokenId != null) e.tokenIds.add(l.tokenId);
+    if (l.borrower) e.borrowers.add(l.borrower);
+    if (l.isEscrowed) e.isEscrowed = true;
+    if (l.escrowedType) e.escrowedTypes.add(l.escrowedType);
+    if (l.principal) e.principal += l.principal;
+    if (l.attestedUsd) {
+      e.attestedUsd += l.attestedUsd;
+      if (l.attestedSource) e.attestedSourceMix[l.attestedSource] = (e.attestedSourceMix[l.attestedSource] || 0) + 1;
+    }
+    for (const h of l.hardware || []) {
+      const k = h.name;
+      if (!k) continue;
+      const prev = e.hardware.get(k);
+      if (prev) prev.count += (h.count || 0);
+      else e.hardware.set(k, { ...h, count: h.count || 0 });
+    }
+    byKey.set(key, e);
+  }
+  return [...byKey.values()].map(e => ({
+    ...e,
+    borrowers: [...e.borrowers],
+    borrower: [...e.borrowers][0] || null,
+    escrowedTypes: [...e.escrowedTypes],
+    tokenIds: [...e.tokenIds],
+    hardware: [...e.hardware.values()],
+    attestedSource: e.attestedSourceMix.nft > 0 ? "nft" : (e.attestedSourceMix["replacement-cost"] > 0 ? "replacement-cost" : null),
+  }))
+  // Largest principal first (matches USDai UI ordering).
+  .sort((a, b) => (b.principal || 0) - (a.principal || 0));
+}
+
 // Estimate attested USD by summing hardware count × GPU map replacementCost.
 // Fallback when no NFT metadata match is found by name.
 function estimateFromReplacementCost(hardware) {
@@ -303,12 +366,15 @@ export default async function handler(req, res) {
     mintedUsdai: tvl?.mintedUsdai ?? null,
   };
 
+  const loanGroups = aggregateLoanGroups(loans);
+
   return res.status(200).json({
     updatedAt: new Date().toISOString(),
     kpis,
     reserves,
     tvlHistory,
     loans,
+    loanGroups,
     tbills,
     gpuRentals,
     warnings,
