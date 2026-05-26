@@ -418,6 +418,40 @@ export default function UsdaiPage() {
           </table>
         </ModuleCard>
 
+        <ModuleCard>
+          <SectionHeader title="Cash Reserve Assets" subtitle="T-Bills and stable reserves backing USDai" />
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <th style={th}>NAME</th>
+                <th style={th}>CHAIN</th>
+                <th style={thR}>APY</th>
+                <th style={thR}>AMOUNT</th>
+                <th style={thR}>RESERVE</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(data?.tbills || []).map((t, i) => (
+                <tr key={i}>
+                  <td style={td}>
+                    {t.iconUrl && <img src={t.iconUrl} alt="" style={{ width: 14, height: 14, verticalAlign: "middle", marginRight: 6, borderRadius: 3 }} />}
+                    {t.name}
+                  </td>
+                  <td style={td}>{t.chain}</td>
+                  <td style={tdR}>{t.apy != null ? `${t.apy.toFixed(2)}%` : "—"}</td>
+                  <td style={tdR}>{fmtUsdShort(t.amount)}</td>
+                  <td style={tdR}>
+                    {t.reserveLink && <a href={t.reserveLink} target="_blank" rel="noreferrer" style={{ color: USDAI_ACCENT, fontSize: 10 }}>view ↗</a>}
+                  </td>
+                </tr>
+              ))}
+              {(data?.tbills || []).length === 0 && (
+                <tr><td colSpan={5} style={{ ...td, color: "#4f5e6f", textAlign: "center", padding: 16 }}>No reserve assets</td></tr>
+              )}
+            </tbody>
+          </table>
+        </ModuleCard>
+
         <div style={{ textAlign: "center", padding: "12px 0", fontSize: 10, color: "#3a4a5a", fontFamily: mono, borderTop: "1px solid rgba(255,255,255,0.025)" }}>
           USDai Dashboard · Data: api.usd.ai · metadata.usd.ai · cloud.vast.ai
         </div>
