@@ -24,6 +24,116 @@ const tooltipStyle = {
   labelStyle: { color: "#e2e8f0" },
 };
 
+const th  = { padding: "8px 8px", textAlign: "left",  fontSize: 10, color: "#6b7a8d", fontFamily: mono, textTransform: "uppercase", letterSpacing: 1 };
+const thR = { ...th, textAlign: "right" };
+const td  = { padding: "8px 8px", fontSize: 13, fontFamily: mono, borderTop: "1px solid rgba(255,255,255,0.03)", color: "#e2e8f0" };
+const tdR = { ...td, textAlign: "right" };
+const dim = { color: "#6b7a8d" };
+
+function shortAddr(a) { return a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "—"; }
+function fmtTerm(termSeconds) {
+  if (!termSeconds) return "—";
+  const d = Math.round(termSeconds / 86400);
+  if (d >= 365) return `${(d/365).toFixed(1)}y`;
+  return `${d}d`;
+}
+
+function LoansTable({ loans, selectedId, onSelect, accent }) {
+  const [tab, setTab] = React.useState("deployed");
+
+  const buckets = React.useMemo(() => {
+    const d = loans.filter(l => l.isDeployed);
+    const u = loans.filter(l => !l.isDeployed);
+    return { deployed: d, upcoming: u };
+  }, [loans]);
+
+  const rows = buckets[tab] || [];
+
+  const Tab = ({ id, label, count }) => (
+    <button onClick={() => setTab(id)} style={{
+      background: tab === id ? `${accent}22` : "rgba(255,255,255,0.025)",
+      border: `1px solid ${tab === id ? `${accent}55` : "rgba(255,255,255,0.05)"}`,
+      borderRadius: 5, padding: "6px 10px", fontSize: 11, fontFamily: mono,
+      color: tab === id ? accent : "#94a3b8", cursor: "pointer",
+    }}>
+      <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 4, background: tab === id ? accent : "#4a5568", marginRight: 6 }} />
+      {label} [{count}]
+    </button>
+  );
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        <Tab id="deployed" label="Deployed Loans" count={buckets.deployed.length} />
+        <Tab id="upcoming" label="Upcoming Loans" count={buckets.upcoming.length} />
+      </div>
+
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: mono }}>
+          <thead>
+            <tr>
+              <th style={th}>NAME</th>
+              <th style={thR}>APY</th>
+              <th style={thR}>AMOUNT</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(loan => {
+              const isSel = loan.documentId === selectedId;
+              const coverage = (loan.attestedUsd && loan.principal) ? (loan.attestedUsd / loan.principal) : null;
+              return (
+                <React.Fragment key={loan.documentId}>
+                  <tr onClick={() => onSelect(loan)}
+                      style={{ cursor: "pointer", background: isSel ? `${accent}14` : undefined }}>
+                    <td style={td}>
+                      {loan.name}
+                      {loan.isEscrowed && <span style={{ marginLeft: 6, color: "#94a3b8", fontSize: 10 }}>(Escrowed)</span>}
+                    </td>
+                    <td style={tdR}>{loan.apr != null ? `${loan.apr.toFixed(1)}%` : "—"}</td>
+                    <td style={tdR}>{fmtUsdShort(loan.principal)}</td>
+                  </tr>
+                  {isSel && (
+                    <tr>
+                      <td colSpan={3} style={{ ...td, background: "rgba(255,255,255,0.02)", padding: "10px 8px" }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 11 }}>
+                          <div><span style={dim}>Borrower:</span> {shortAddr(loan.borrower)}</div>
+                          <div><span style={dim}>Location:</span> {loan.location?.name || "—"}</div>
+                          <div><span style={dim}>Term:</span> {fmtTerm(loan.termSeconds)}</div>
+                          <div><span style={dim}>Off-take:</span> {loan.offTake || "—"}</div>
+                          <div>
+                            <span style={dim}>Attested $:</span> {fmtUsdShort(loan.attestedUsd)}
+                            {loan.attestedSource === "replacement-cost" && (
+                              <span style={{ ...dim, fontSize: 9, marginLeft: 4 }}>(est)</span>
+                            )}
+                          </div>
+                          <div>
+                            <span style={dim}>Coverage:</span> {coverage != null ? `${(coverage * 100).toFixed(0)}%` : "—"}
+                          </div>
+                          {loan.tokenId != null && (
+                            <div style={{ gridColumn: "1 / -1" }}>
+                              <a href={`https://metadata.usd.ai/v1/${loan.tokenId}`} target="_blank" rel="noreferrer"
+                                 style={{ color: accent, fontSize: 10 }}>
+                                NFT #{loan.tokenId} ↗
+                              </a>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+            {rows.length === 0 && (
+              <tr><td colSpan={3} style={{ ...td, color: "#4f5e6f", textAlign: "center", padding: 20 }}>No loans in this tab</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function Kpi({ label, value, sub, accent }) {
   return (
     <div style={{
@@ -41,6 +151,7 @@ function Kpi({ label, value, sub, accent }) {
 
 export default function UsdaiPage() {
   const { data, loading, error, refreshing, lastUpdated, refreshKey, refresh } = useUsdaiData();
+  const [selectedLoanId, setSelectedLoanId] = React.useState(null);
 
   if (error) {
     return (
@@ -125,6 +236,21 @@ export default function UsdaiPage() {
               </ResponsiveContainer>
             </div>
           )}
+        </ModuleCard>
+
+        <ModuleCard>
+          <SectionHeader title="Loans" subtitle={`${(data?.loans || []).length} loans · click a row for detail`} />
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(380px, 0.42fr) 0.58fr", gap: 16 }}>
+            <LoansTable
+              loans={data?.loans || []}
+              selectedId={selectedLoanId}
+              onSelect={(l) => setSelectedLoanId(prev => prev === l.documentId ? null : l.documentId)}
+              accent={USDAI_ACCENT}
+            />
+            <div style={{ minHeight: 380, border: "1px dashed rgba(255,255,255,0.06)", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", color: "#4f5e6f", fontFamily: mono, fontSize: 11 }}>
+              Globe — added in T11
+            </div>
+          </div>
         </ModuleCard>
 
         <div style={{ textAlign: "center", padding: "12px 0", fontSize: 10, color: "#3a4a5a", fontFamily: mono, borderTop: "1px solid rgba(255,255,255,0.025)" }}>
