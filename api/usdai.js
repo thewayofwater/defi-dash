@@ -311,7 +311,8 @@ export default async function handler(req, res) {
   const loans = por_array.filter(x => x.type === "DEAL").map(parseLoanRow).map(loan => {
     const key = (loan.name || "").replace(/^NVIDIA\s+/i, "").trim();
     const meta = nameToMeta.get(key);
-    // Enrich each hardware item with its GPU-map lookup (vastGpuName, replacementCost, defaultLifeYears).
+    // Enrich each hardware item with its GPU-map lookup. `vastProxy` is the
+    // gpu_name used as a stand-in for models without native Vast.ai listings.
     const hardware = loan.hardware.map(h => {
       const m = lookupGpu(h.name);
       return {
@@ -319,6 +320,7 @@ export default async function handler(req, res) {
         count: h.count,
         percentage: h.percentage,
         vastGpuName: m?.vast ?? null,
+        vastProxy: m?.vastProxy ?? null,
         replacementCost: m?.replacementCost ?? null,
         defaultLifeYears: m?.life ?? null,
       };
@@ -335,8 +337,16 @@ export default async function handler(req, res) {
     };
   });
 
-  // Phase 2: fan out to Vast.ai for each distinct mapped GPU model in the loans.
-  const vastNames = distinctVastNames(loans.flatMap(l => l.hardware));
+  // Phase 2: fan out to Vast.ai for each distinct mapped GPU model in the loans,
+  // INCLUDING proxy names (e.g. B200 as a stand-in for B300).
+  const vastNameSet = new Set();
+  for (const l of loans) {
+    for (const h of l.hardware) {
+      if (h.vastGpuName) vastNameSet.add(h.vastGpuName);
+      if (h.vastProxy)   vastNameSet.add(h.vastProxy);
+    }
+  }
+  const vastNames = [...vastNameSet];
   const rentalsArr = await Promise.all(vastNames.map(async (name) => {
     const r = await fetchVastRentals(name);
     if (r.error) warnings.push(`vast ${name}: ${r.error}`);

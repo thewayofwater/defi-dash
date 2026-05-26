@@ -23,13 +23,22 @@ export function impliedValuePerUnit({ medianDph, replacementCost, params }) {
   return pv + salvage;
 }
 
-// Returns `{ implied, attested, gap, gapPct }` per GPU model.
-export function modelComparison({ vastGpuName, replacementCost, rentals, attestedPerUnit, params }) {
-  const r = rentals?.[vastGpuName];
+// Returns `{ implied, attested, gap, gapPct, rentalSource, proxyUsed }` per GPU model.
+// `rentalSource` records which gpu_name actually supplied the median $/hr.
+// `proxyUsed` is the proxy gpu_name when the native one had no rental data.
+export function modelComparison({ vastGpuName, vastProxy, replacementCost, rentals, attestedPerUnit, params }) {
+  let r = vastGpuName ? rentals?.[vastGpuName] : null;
+  let rentalSource = vastGpuName;
+  let proxyUsed = null;
+  if ((!r || r.medianDph == null) && vastProxy && rentals?.[vastProxy]?.medianDph != null) {
+    r = rentals[vastProxy];
+    rentalSource = vastProxy;
+    proxyUsed = vastProxy;
+  }
   const implied = impliedValuePerUnit({ medianDph: r?.medianDph, replacementCost, params });
   const gap = (implied != null && attestedPerUnit != null) ? implied - attestedPerUnit : null;
   const gapPct = (gap != null && attestedPerUnit) ? gap / attestedPerUnit : null;
-  return { implied, attested: attestedPerUnit ?? null, gap, gapPct };
+  return { implied, attested: attestedPerUnit ?? null, gap, gapPct, rentalSource, proxyUsed, medianDph: r?.medianDph ?? null, listingCount: r?.listingCount ?? 0 };
 }
 
 // Group loans by hardware model. Returns { model, vastGpuName, replacementCost, units, attestedPerUnit }[]
@@ -44,10 +53,11 @@ export function aggregateByModel(loans) {
       const key = (h.name || "").replace(/^NVIDIA\s+/i, "").trim();
       if (!key || !h.count) continue;
       const shareUsd = loan.attestedUsd * ((h.count || 0) / totalCount);
-      const e = byKey.get(key) || { model: key, vastGpuName: h.vastGpuName, replacementCost: h.replacementCost, units: 0, totalAttestedUsd: 0 };
+      const e = byKey.get(key) || { model: key, vastGpuName: h.vastGpuName, vastProxy: h.vastProxy, replacementCost: h.replacementCost, units: 0, totalAttestedUsd: 0 };
       e.units += h.count;
       e.totalAttestedUsd += shareUsd;
       e.vastGpuName = e.vastGpuName ?? h.vastGpuName;
+      e.vastProxy = e.vastProxy ?? h.vastProxy;
       e.replacementCost = e.replacementCost ?? h.replacementCost;
       byKey.set(key, e);
     }

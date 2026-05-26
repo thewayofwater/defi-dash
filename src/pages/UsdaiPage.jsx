@@ -12,6 +12,18 @@ const UsdaiGlobe = React.lazy(() => import("../components/UsdaiGlobe"));
 const mono = "'JetBrains Mono', monospace";
 export const USDAI_ACCENT = "#c8b88a";
 
+// Common EVM chain IDs → display name. Add more as needed.
+const CHAIN_NAMES = {
+  1: "Ethereum",
+  10: "Optimism",
+  56: "BNB Chain",
+  137: "Polygon",
+  8453: "Base",
+  42161: "Arbitrum",
+  43114: "Avalanche",
+};
+const chainName = (id) => CHAIN_NAMES[id] || (id != null ? `Chain ${id}` : "—");
+
 const fmtUsdShort = (n) => {
   if (n == null || !Number.isFinite(Number(n))) return "—";
   const v = Number(n);
@@ -92,7 +104,6 @@ function LoansTable({ groups, selectedKey, onSelect, accent }) {
                     <td style={td}>
                       {g.name}
                       {g.isEscrowed && <span style={{ marginLeft: 6, color: "#94a3b8", fontSize: 10 }}>(Escrowed)</span>}
-                      {g.loanCount > 1 && <span style={{ marginLeft: 6, color: "#4f5e6f", fontSize: 10 }}>· {g.loanCount} loans</span>}
                     </td>
                     <td style={tdR}>{g.apr != null ? `${g.apr.toFixed(1)}%` : "—"}</td>
                     <td style={tdR}>{fmtUsdShort(g.principal)}</td>
@@ -216,6 +227,7 @@ export default function UsdaiPage() {
     return aggs.map(a => {
       const cmp = modelComparison({
         vastGpuName: a.vastGpuName,
+        vastProxy: a.vastProxy,
         replacementCost: a.replacementCost,
         rentals: data?.gpuRentals,
         attestedPerUnit: a.attestedPerUnit,
@@ -225,8 +237,10 @@ export default function UsdaiPage() {
         model: a.model,
         units: a.units,
         vastGpuName: a.vastGpuName,
-        medianDph: data?.gpuRentals?.[a.vastGpuName]?.medianDph ?? null,
-        listingCount: data?.gpuRentals?.[a.vastGpuName]?.listingCount ?? 0,
+        rentalSource: cmp.rentalSource,
+        proxyUsed: cmp.proxyUsed,
+        medianDph: cmp.medianDph,
+        listingCount: cmp.listingCount,
         attested: cmp.attested,
         implied: cmp.implied,
         gap: cmp.gap,
@@ -416,7 +430,10 @@ export default function UsdaiPage() {
             <tbody>
               {modelRows.map(r => (
                 <tr key={r.model}>
-                  <td style={td}>{r.model}</td>
+                  <td style={td}>
+                    {r.model}
+                    {r.proxyUsed && <span style={{ ...dim, fontSize: 9, marginLeft: 6 }}>({r.proxyUsed} proxy)</span>}
+                  </td>
                   <td style={tdR}>{r.units}</td>
                   <td style={tdR}>{r.medianDph != null ? `$${r.medianDph.toFixed(2)}` : "—"}</td>
                   <td style={tdR}>{r.listingCount || "—"}</td>
@@ -453,7 +470,7 @@ export default function UsdaiPage() {
                     {t.iconUrl && <img src={t.iconUrl} alt="" style={{ width: 14, height: 14, verticalAlign: "middle", marginRight: 6, borderRadius: 3 }} />}
                     {t.name}
                   </td>
-                  <td style={td}>{t.chain}</td>
+                  <td style={td}>{chainName(t.chain)}</td>
                   <td style={tdR}>{t.apy != null ? `${t.apy.toFixed(2)}%` : "—"}</td>
                   <td style={tdR}>{fmtUsdShort(t.amount)}</td>
                   <td style={tdR}>

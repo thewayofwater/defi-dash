@@ -5,7 +5,12 @@
 
 // Vast.ai gpu_name values use spaces (verified via live enumeration), e.g.
 // "RTX 5090", "H100 SXM", "RTX PRO 6000 S". We pick the most common variant
-// per model. B300 confirmed absent from Vast.ai (too new).
+// per model.
+//
+// `vastProxy` lets a GPU that has no Vast.ai listings (typically a brand-new
+// generation like B300) borrow the rental rate from a closely related GPU
+// (e.g. B200, same architecture family) as a stand-in. The UI labels these
+// rows as "(<proxy> proxy)" so users know the rental rate isn't native.
 export const USDAI_GPU_MAP = {
   "H100":                    { vast: "H100 SXM",  life: 4, replacementCost: 27_000 },
   "H100 SXM":                { vast: "H100 SXM",  life: 4, replacementCost: 27_000 },
@@ -13,10 +18,11 @@ export const USDAI_GPU_MAP = {
   "H200":                    { vast: "H200",      life: 4, replacementCost: 33_000 },
   "H200 NVL":                { vast: "H200 NVL",  life: 4, replacementCost: 32_000 },
   "B200":                    { vast: "B200",      life: 5, replacementCost: 50_000 },
-  "B300":                    { vast: null,        life: 5, replacementCost: 65_000, note: "no rental data" },
+  // B300 has no Vast.ai listings (too new); use B200 as proxy since it's the same
+  // Blackwell architecture, similar form factor, and the most recent listed gen.
+  "B300":                    { vast: null, vastProxy: "B200", life: 5, replacementCost: 65_000 },
   // RTX PRO 6000 Blackwell maps to RTX PRO 6000 WS (workstation) — the most populous
-  // Blackwell-gen workstation listing on Vast.ai. "RTX PRO 6000 S" exists too but is
-  // less common. The map uses WS as the canonical proxy.
+  // Blackwell-gen workstation listing on Vast.ai.
   "RTX PRO 6000":            { vast: "RTX PRO 6000 WS", life: 4, replacementCost: 10_000 },
   "RTX PRO 6000 Blackwell":  { vast: "RTX PRO 6000 WS", life: 4, replacementCost: 10_000 },
   "RTX 5090":                { vast: "RTX 5090",  life: 4, replacementCost: 2_500 },
