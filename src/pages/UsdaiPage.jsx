@@ -5,6 +5,8 @@ import {
 import { useUsdaiData } from "../hooks/useUsdaiData";
 import { SectionHeader, LoadingSpinner, ModuleCard } from "../components/Shared";
 
+const UsdaiGlobe = React.lazy(() => import("../components/UsdaiGlobe"));
+
 const mono = "'JetBrains Mono', monospace";
 export const USDAI_ACCENT = "#c8b88a";
 
@@ -152,6 +154,32 @@ function Kpi({ label, value, sub, accent }) {
 export default function UsdaiPage() {
   const { data, loading, error, refreshing, lastUpdated, refreshKey, refresh } = useUsdaiData();
   const [selectedLoanId, setSelectedLoanId] = React.useState(null);
+  const globeRef = React.useRef(null);
+
+  const globePoints = React.useMemo(() => {
+    return (data?.loans || [])
+      .filter(l => l.location)
+      .map(l => ({
+        id: l.documentId,
+        lat: l.location.lat,
+        lng: l.location.lng,
+        size: Math.min(0.05, Math.max(0.005, (l.principal || 0) / 4e8)),
+        color: l.isDeployed ? USDAI_ACCENT : (l.isEscrowed ? "#fbbf24" : "#6b7a8d"),
+        label: `${l.name}<br/>${fmtUsdShort(l.principal)} · ${l.location.name}`,
+      }));
+  }, [data]);
+
+  const handleSelectLoan = React.useCallback((loan) => {
+    setSelectedLoanId(prev => prev === loan.documentId ? null : loan.documentId);
+    if (loan.location && globeRef.current?.spinTo) {
+      globeRef.current.spinTo(loan.location.lat, loan.location.lng);
+    }
+  }, []);
+
+  const handleDotClick = React.useCallback((point) => {
+    const loan = (data?.loans || []).find(l => l.documentId === point.id);
+    if (loan) handleSelectLoan(loan);
+  }, [data, handleSelectLoan]);
 
   if (error) {
     return (
@@ -244,12 +272,16 @@ export default function UsdaiPage() {
             <LoansTable
               loans={data?.loans || []}
               selectedId={selectedLoanId}
-              onSelect={(l) => setSelectedLoanId(prev => prev === l.documentId ? null : l.documentId)}
+              onSelect={handleSelectLoan}
               accent={USDAI_ACCENT}
             />
-            <div style={{ minHeight: 380, border: "1px dashed rgba(255,255,255,0.06)", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", color: "#4f5e6f", fontFamily: mono, fontSize: 11 }}>
-              Globe — added in T11
-            </div>
+            <React.Suspense fallback={
+              <div style={{ minHeight: 380, display: "flex", alignItems: "center", justifyContent: "center", color: "#4f5e6f", fontFamily: mono, fontSize: 11 }}>
+                Loading globe…
+              </div>
+            }>
+              <UsdaiGlobe ref={globeRef} points={globePoints} onPointClick={handleDotClick} accent={USDAI_ACCENT} />
+            </React.Suspense>
           </div>
         </ModuleCard>
 
