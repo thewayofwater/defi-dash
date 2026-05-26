@@ -1,4 +1,7 @@
 import React from "react";
+import {
+  ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+} from "recharts";
 import { useUsdaiData } from "../hooks/useUsdaiData";
 import { SectionHeader, LoadingSpinner, ModuleCard } from "../components/Shared";
 
@@ -14,6 +17,12 @@ const fmtUsdShort = (n) => {
   return `$${v.toFixed(2)}`;
 };
 const fmtPct = (n) => (n == null || !Number.isFinite(Number(n))) ? "—" : `${Number(n).toFixed(2)}%`;
+
+const tooltipStyle = {
+  contentStyle: { background: "#131926", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 5, fontSize: 10, fontFamily: mono, color: "#e2e8f0" },
+  itemStyle: { color: "#e2e8f0" },
+  labelStyle: { color: "#e2e8f0" },
+};
 
 function Kpi({ label, value, sub, accent }) {
   return (
@@ -87,6 +96,36 @@ export default function UsdaiPage() {
           <Kpi label="Utilization"    value={fmtPct(data?.kpis?.utilization)} />
           <Kpi label="sUSDai Supply"  value={fmtUsdShort(data?.kpis?.susdaiSupply)} sub={`USDai supply ${fmtUsdShort(data?.kpis?.usdaiSupply)}`} />
         </div>
+
+        <ModuleCard>
+          <SectionHeader title="Reserves & TVL" subtitle="Stablecoin reserves vs deployed loans over time" />
+          {(data?.tvlHistory?.length || 0) === 0 ? (
+            <div style={{ padding: 30, textAlign: "center", fontFamily: mono, fontSize: 11, color: "#4f5e6f" }}>
+              TVL history unavailable
+            </div>
+          ) : (
+            <div style={{ width: "100%", height: 280 }}>
+              <ResponsiveContainer>
+                <ComposedChart data={data.tvlHistory} margin={{ top: 12, right: 12, left: 8, bottom: 0 }}>
+                  <CartesianGrid stroke="rgba(255,255,255,0.04)" />
+                  <XAxis dataKey="date"
+                    tickFormatter={(v) => new Date(v).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                    tick={{ fill: "#6b7a8d", fontSize: 10, fontFamily: mono }}
+                    minTickGap={40} />
+                  <YAxis yAxisId="left" tickFormatter={fmtUsdShort}
+                    tick={{ fill: "#6b7a8d", fontSize: 10, fontFamily: mono }} />
+                  <Tooltip {...tooltipStyle}
+                    labelFormatter={(v) => new Date(v).toLocaleDateString()}
+                    formatter={(v, k) => [fmtUsdShort(v), k]} />
+                  <Area yAxisId="left" type="monotone" dataKey="stablecoin" stackId="1"
+                        stroke="#22d3ee" fill="#22d3ee" fillOpacity={0.22} name="Stablecoin" />
+                  <Area yAxisId="left" type="monotone" dataKey="loans" stackId="1"
+                        stroke={USDAI_ACCENT} fill={USDAI_ACCENT} fillOpacity={0.30} name="Loans" />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </ModuleCard>
 
         <div style={{ textAlign: "center", padding: "12px 0", fontSize: 10, color: "#3a4a5a", fontFamily: mono, borderTop: "1px solid rgba(255,255,255,0.025)" }}>
           USDai Dashboard · Data: api.usd.ai · metadata.usd.ai · cloud.vast.ai
