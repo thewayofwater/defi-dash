@@ -5,6 +5,31 @@ import { SectionHeader, LoadingSpinner, ModuleCard } from "../components/Shared"
 const mono = "'JetBrains Mono', monospace";
 export const USDAI_ACCENT = "#c8b88a";
 
+const fmtUsdShort = (n) => {
+  if (n == null || !Number.isFinite(Number(n))) return "—";
+  const v = Number(n);
+  if (Math.abs(v) >= 1e9) return `$${(v/1e9).toFixed(2)}B`;
+  if (Math.abs(v) >= 1e6) return `$${(v/1e6).toFixed(1)}M`;
+  if (Math.abs(v) >= 1e3) return `$${(v/1e3).toFixed(1)}K`;
+  return `$${v.toFixed(2)}`;
+};
+const fmtPct = (n) => (n == null || !Number.isFinite(Number(n))) ? "—" : `${Number(n).toFixed(2)}%`;
+
+function Kpi({ label, value, sub, accent }) {
+  return (
+    <div style={{
+      flex: 1, minWidth: 140, padding: "10px 14px",
+      background: "rgba(255,255,255,0.025)",
+      border: "1px solid rgba(255,255,255,0.05)",
+      borderRadius: 6,
+    }}>
+      <div style={{ fontSize: 9, fontFamily: mono, color: "#6b7a8d", letterSpacing: 1, textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 700, color: accent || "#e2e8f0", fontFamily: mono, marginTop: 4 }}>{value}</div>
+      {sub && <div style={{ fontSize: 10, color: "#4f5e6f", fontFamily: mono, marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+}
+
 export default function UsdaiPage() {
   const { data, loading, error, refreshing, lastUpdated, refreshKey, refresh } = useUsdaiData();
 
@@ -54,18 +79,14 @@ export default function UsdaiPage() {
           </div>
         )}
 
-        <ModuleCard>
-          <SectionHeader title="USDai" subtitle="Page modules are added by subsequent tasks" />
-          <pre style={{ fontSize: 10, color: "#94a3b8", overflow: "auto", maxHeight: 300 }}>
-            {JSON.stringify({
-              kpis: data?.kpis,
-              reserves: data?.reserves,
-              loans_count: data?.loans?.length,
-              tbills_count: data?.tbills?.length,
-              gpuRentals: data?.gpuRentals,
-            }, null, 2)}
-          </pre>
-        </ModuleCard>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Kpi label="TVL"            value={fmtUsdShort(data?.kpis?.tvl)}
+               sub={`${fmtUsdShort(data?.reserves?.stablecoin)} stable · ${fmtUsdShort(data?.reserves?.loans)} loans`} />
+          <Kpi label="Current APY"    value={fmtPct(data?.kpis?.currentApy)}  accent={USDAI_ACCENT} />
+          <Kpi label="Projected APY"  value={fmtPct(data?.kpis?.expectedApy)} />
+          <Kpi label="Utilization"    value={fmtPct(data?.kpis?.utilization)} />
+          <Kpi label="sUSDai Supply"  value={fmtUsdShort(data?.kpis?.susdaiSupply)} sub={`USDai supply ${fmtUsdShort(data?.kpis?.usdaiSupply)}`} />
+        </div>
 
         <div style={{ textAlign: "center", padding: "12px 0", fontSize: 10, color: "#3a4a5a", fontFamily: mono, borderTop: "1px solid rgba(255,255,255,0.025)" }}>
           USDai Dashboard · Data: api.usd.ai · metadata.usd.ai · cloud.vast.ai
