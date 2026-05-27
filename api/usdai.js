@@ -87,10 +87,15 @@ async function fetchVastRentals(vastGpuName) {
 // Aggregate raw loans into rollup rows keyed by `group` field. USDai's UI
 // shows 7 individual "RTX PRO 6000 [1]" loans as a single "RTX PRO 6000 [7]"
 // row; the `group` field is the canonical key for this rollup.
+//
+// IMPORTANT: when `group` is null, each loan stays as its own row. Falling
+// back to `name` would incorrectly merge distinct loans that happen to share
+// a name (e.g. two different B300 [128] loans, one in OH, USA and one in
+// NSW, Australia, both have group: null and name: "B300 [128]").
 function aggregateLoanGroups(loans) {
   const byKey = new Map();
   for (const l of loans) {
-    const key = l.group || l.name || l.documentId;
+    const key = l.group || l.documentId;
     if (!key) continue;
     const e = byKey.get(key) || {
       groupKey: key,

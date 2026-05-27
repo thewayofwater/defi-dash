@@ -120,9 +120,13 @@ function LoansTable({ groups, selectedKey, onSelect, accent }) {
                           <div><span style={dim}>Term:</span> {fmtTerm(g.termSeconds)}</div>
                           <div><span style={dim}>Off-take:</span> {g.offTake || "—"}</div>
                           <div>
-                            <span style={dim}>Attested $:</span> {fmtUsdShort(g.attestedUsd)}
+                            <span style={dim}>
+                              {g.attestedSource === "nft" ? "USDai-attested $:" : "Replacement-cost est:"}
+                            </span> {fmtUsdShort(g.attestedUsd)}
                             {g.attestedSource === "replacement-cost" && (
-                              <span style={{ ...dim, fontSize: 9, marginLeft: 4 }}>(est)</span>
+                              <span style={{ ...dim, fontSize: 9, marginLeft: 4 }} title="No matching NFT — fallback estimate using public NVIDIA list prices × GPU count">
+                                (not from NFT)
+                              </span>
                             )}
                           </div>
                           <div>
@@ -367,7 +371,7 @@ export default function UsdaiPage() {
         <ModuleCard>
           <SectionHeader
             title="GPU Collateral Cross-Check"
-            subtitle="USDai-attested $/unit vs DCF-implied $/unit from live Vast.ai rentals" />
+            subtitle="Per-unit collateral $ vs DCF-implied $/unit from live Vast.ai rentals. Attested $ is sourced from metadata.usd.ai NFTs when a loan name matches; otherwise it falls back to a public-list replacement-cost estimate (labeled in detail panel)." />
 
           <div style={{ marginBottom: 14 }}>
             <button onClick={() => setAssumptionsOpen(o => !o)}
