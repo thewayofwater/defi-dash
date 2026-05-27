@@ -70,11 +70,31 @@ export default function LoanLifecycleChart({
   };
   const fmtDate = (v) => new Date(v).toLocaleDateString(undefined, { month: "short", year: "2-digit" });
 
+  const legendItemStyle = { display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: "#94a3b8", fontFamily: mono };
+
   return (
     <div style={{ marginTop: 10 }}>
-      <div style={{ fontSize: 10, color: "#6b7a8d", fontFamily: mono, marginBottom: 6, display: "flex", justifyContent: "space-between" }}>
+      <div style={{ fontSize: 10, color: "#6b7a8d", fontFamily: mono, marginBottom: 6, display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
         <span style={{ letterSpacing: 1, textTransform: "uppercase" }}>LTV Deleverage</span>
         <span>Today: LTV {todayLtv != null ? `${todayLtv.toFixed(0)}%` : "—"} · Equity {fmtUsd(todayCollateral - todayPrincipal)}</span>
+      </div>
+      <div style={{ display: "flex", gap: 14, marginBottom: 6, flexWrap: "wrap" }}>
+        <div style={legendItemStyle}>
+          <span style={{ width: 16, height: 2, background: accent, display: "inline-block" }} />
+          Loan principal
+        </div>
+        <div style={legendItemStyle}>
+          <span style={{ width: 16, display: "inline-block", borderTop: "1.5px dashed #94a3b8" }} />
+          GPU collateral value
+        </div>
+        <div style={legendItemStyle}>
+          <span style={{ width: 16, height: 10, background: accent, opacity: 0.18, display: "inline-block", border: `1px solid ${accent}33` }} />
+          Equity cushion
+        </div>
+        <div style={legendItemStyle}>
+          <span style={{ width: 16, display: "inline-block", borderTop: "1px dashed #22d3ee" }} />
+          Today
+        </div>
       </div>
       <div style={{ width: "100%", height: 170 }}>
         <ResponsiveContainer>
