@@ -169,7 +169,6 @@ function LoansTable({ groups, selectedKey, onSelect, accent }) {
                           maturityDate={g.maturityDate}
                           originalPrincipal={g.principal}
                           originalCollateral={g.attestedUsd}
-                          usefulLifeDays={g.attestedUsefulLifeDays || 1080}
                           accent={accent}
                         />
                       </td>
