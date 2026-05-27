@@ -96,7 +96,7 @@ function LoansTable({ groups, selectedKey, onSelect, accent }) {
           <tbody>
             {rows.map(g => {
               const isSel = g.groupKey === selectedKey;
-              const coverage = (g.attestedUsd && g.principal) ? (g.attestedUsd / g.principal) : null;
+              const ltv = (g.attestedUsd && g.principal) ? (g.principal / g.attestedUsd) : null;
               return (
                 <React.Fragment key={g.groupKey}>
                   <tr onClick={() => onSelect(g)}
@@ -122,13 +122,19 @@ function LoansTable({ groups, selectedKey, onSelect, accent }) {
                           <div>
                             <span style={dim}>
                               {g.attestedSource === "nft-aggregate" ? "Attested $ (aggregate NFT):"
+                                : g.attestedSource === "nft-bundle" ? "Attested $ (bundle NFTs):"
                                 : g.attestedSource === "nft-per-server" ? "Attested $ (per-server NFTs):"
                                 : g.attestedSource === "replacement-cost" ? "Replacement-cost est:"
                                 : "Attested $:"}
                             </span> {fmtUsdShort(g.attestedUsd)}
+                            {g.attestedSource === "nft-bundle" && g.bundleIds?.length > 1 && (
+                              <span style={{ ...dim, fontSize: 9, marginLeft: 4 }} title={`Sum of ${g.bundleIds.length} on-chain bundles backing this loan group`}>
+                                ({g.bundleIds.length} bundles)
+                              </span>
+                            )}
                             {g.attestedSource === "nft-per-server" && (
-                              <span style={{ ...dim, fontSize: 9, marginLeft: 4 }} title="Sum of (hardware count × USDai per-server NFT median price). Excludes networking/infrastructure that aggregate NFTs include.">
-                                (hardware only)
+                              <span style={{ ...dim, fontSize: 9, marginLeft: 4 }} title="No on-chain bundle found for this borrower yet (likely upcoming/not-yet-deployed). Estimated from per-server NFT median price × hardware count.">
+                                (estimate)
                               </span>
                             )}
                             {g.attestedSource === "replacement-cost" && (
@@ -138,7 +144,8 @@ function LoansTable({ groups, selectedKey, onSelect, accent }) {
                             )}
                           </div>
                           <div>
-                            <span style={dim}>Coverage:</span> {coverage != null ? `${(coverage * 100).toFixed(0)}%` : "—"}
+                            <span style={dim}>LTV:</span> {ltv != null ? `${(ltv * 100).toFixed(0)}%` : "—"}
+                            {ltv != null && ltv > 0.8 && <span style={{ color: "#fbbf24", fontSize: 9, marginLeft: 4 }}>(above 80% cap)</span>}
                           </div>
                           {g.hardware?.length > 0 && (
                             <div style={{ gridColumn: "1 / -1", ...dim, fontSize: 10 }}>

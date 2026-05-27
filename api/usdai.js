@@ -3,6 +3,24 @@ import { lookupGpu, normalizeHardwareName, distinctVastNames } from "../src/util
 const USDAI = "https://api.usd.ai/usdai";
 const LLAMA = "https://api.llama.fi/protocol/usd-ai";
 
+// ─── On-chain bundle indexer config ─────────────────────────────────────────
+const ARB_RPC = "https://arb1.arbitrum.io/rpc";
+const HARDWARE_NFT = "0xb31f04f920f24eda3ad276d55c5afefad6230c5d"; // USD.AI Tokenized Hardware
+const BUNDLE_WRAPPER = "0x80E3146FB2328fE1b79f92F5a3a6bF35515AEe37"; // BundleCollateralWrapper
+const LOAN_ROUTER    = "0x0C2ED170F2bB1DF1a44292Ad621B577b3C9597D1"; // active-bundle holder
+// keccak256("BundleMinted(uint256,address,bytes)") — computed once via web3_sha3
+const TOPIC_BUNDLE_MINTED = "0x448434564de2b5ad2b94efb65ddb08d1d069f1172cff44e3092314d4b6490871";
+// Sweep range — bundles were first minted around block 400M; widen the start
+// if you find unwrapped/older ones during refresh.
+const BUNDLE_SWEEP_FROM = 350_000_000;
+const BUNDLE_SWEEP_CHUNK = 5_000_000;
+
+// Module-level cache for the bundle index. Vercel keeps the module warm across
+// requests, so this is a process-wide cache. TTL is 30 min — bundles are rare
+// events (one per new loan).
+let _bundleCache = null; // { ts, bundles, byBorrower }
+const BUNDLE_TTL_MS = 30 * 60 * 1000;
+
 // Stage codes confirmed via proof-of-reserves probe (see plan Task 0 notes).
 // Update if USDai changes the schema.
 const STAGE_DEPLOYED = 6;
@@ -110,21 +128,41 @@ function estimateFromPerGpuIndex(hardware, perGpuIndex) {
   return anyHit ? total : null;
 }
 
+// Module-level cache for NFT metadata — these are static per tokenId so cache
+// aggressively. Once we've seen an NFT's cv, never re-fetch it.
+const _metadataCache = new Map();
+
 async function fetchMetadata(tokenId) {
-  try {
-    const r = await fetch(`https://metadata.usd.ai/v1/${tokenId}`, { signal: AbortSignal.timeout(4000) });
-    if (!r.ok) return null;
-    const j = await r.json();
-    const attrs = Object.fromEntries((j.attributes || []).map(a => [a.trait_type, a.value]));
-    return {
-      tokenId,
-      name: j.name,
-      collateralValueUsd: typeof attrs["Collateral Value USD"] === "number" ? attrs["Collateral Value USD"] : null,
-      usefulLifeDays: typeof attrs["Useful Life (days)"] === "number" ? attrs["Useful Life (days)"] : null,
-      quantity: typeof attrs["Quantity"] === "number" ? attrs["Quantity"] : null,
-      manufacturer: attrs["Manufacturer"] || null,
-    };
-  } catch { return null; }
+  if (_metadataCache.has(tokenId)) return _metadataCache.get(tokenId);
+  // Retry up to 3 times with backoff before giving up
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const r = await fetch(`https://metadata.usd.ai/v1/${tokenId}`, { signal: AbortSignal.timeout(6000) });
+      if (r.status === 404) {
+        _metadataCache.set(tokenId, null);  // cache negative for missing IDs
+        return null;
+      }
+      if (!r.ok) {
+        await new Promise(s => setTimeout(s, 200 * (attempt + 1)));
+        continue;
+      }
+      const j = await r.json();
+      const attrs = Object.fromEntries((j.attributes || []).map(a => [a.trait_type, a.value]));
+      const result = {
+        tokenId,
+        name: j.name,
+        collateralValueUsd: typeof attrs["Collateral Value USD"] === "number" ? attrs["Collateral Value USD"] : null,
+        usefulLifeDays: typeof attrs["Useful Life (days)"] === "number" ? attrs["Useful Life (days)"] : null,
+        quantity: typeof attrs["Quantity"] === "number" ? attrs["Quantity"] : null,
+        manufacturer: attrs["Manufacturer"] || null,
+      };
+      _metadataCache.set(tokenId, result);
+      return result;
+    } catch {
+      await new Promise(s => setTimeout(s, 200 * (attempt + 1)));
+    }
+  }
+  return null; // don't cache; allow retry next refresh
 }
 
 // Fetch all tokens across ranges with bounded concurrency.
@@ -141,6 +179,176 @@ async function fetchAllMetadata() {
     results.push(...rows.filter(Boolean));
   }
   return results;
+}
+
+// ─── Bundle indexer helpers ────────────────────────────────────────────────
+
+async function rpcCall(method, params, timeoutMs = 15000) {
+  const resp = await fetch(ARB_RPC, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!resp.ok) throw new Error(`RPC ${method} ${resp.status}`);
+  const j = await resp.json();
+  if (j.error) throw new Error(`RPC ${method}: ${j.error.message}`);
+  return j.result;
+}
+
+// Decode BundleMinted event data bytes payload.
+// Layout: 0x[32-byte offset=0x20][32-byte length L][L bytes content]
+// Content: 20-byte NFT contract address + N × 32-byte tokenIds
+function decodeBundlePayload(dataHex) {
+  if (!dataHex || !dataHex.startsWith("0x")) return { contract: null, tokenIds: [] };
+  const raw = dataHex.slice(2);
+  if (raw.length < 64 + 64) return { contract: null, tokenIds: [] };
+  // Skip offset (64 chars) and length (64 chars)
+  const content = raw.slice(64 + 64);
+  if (content.length < 40) return { contract: null, tokenIds: [] };
+  const contract = "0x" + content.slice(0, 40);
+  const tokenIdsHex = content.slice(40);
+  const tokenIds = [];
+  for (let i = 0; i + 64 <= tokenIdsHex.length; i += 64) {
+    const v = BigInt("0x" + tokenIdsHex.slice(i, i + 64));
+    if (v > 0n) tokenIds.push(Number(v));
+  }
+  return { contract: contract.toLowerCase(), tokenIds };
+}
+
+async function fetchBundleMintedEvents() {
+  const latest = parseInt(await rpcCall("eth_blockNumber", []), 16);
+  const chunks = [];
+  for (let start = BUNDLE_SWEEP_FROM; start < latest; start += BUNDLE_SWEEP_CHUNK) {
+    chunks.push([start, Math.min(start + BUNDLE_SWEEP_CHUNK - 1, latest)]);
+  }
+  // Parallel fetch with concurrency limit
+  const CONCURRENCY = 6;
+  const all = [];
+  for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+    const batch = chunks.slice(i, i + CONCURRENCY);
+    const results = await Promise.all(batch.map(async ([fr, to]) => {
+      try {
+        const logs = await rpcCall("eth_getLogs", [{
+          address: BUNDLE_WRAPPER,
+          topics: [TOPIC_BUNDLE_MINTED],
+          fromBlock: "0x" + fr.toString(16),
+          toBlock: "0x" + to.toString(16),
+        }], 20000);
+        return logs || [];
+      } catch (e) {
+        return []; // best-effort; partial sweep is fine
+      }
+    }));
+    for (const r of results) all.push(...r);
+  }
+  // Dedupe by tx hash
+  const seen = new Set();
+  return all.filter(e => {
+    const k = e.transactionHash + ":" + e.logIndex;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+// Given an array of BundleMinted events, check current owner of each bundle
+// and return only those still held by the LoanRouter (i.e. active collateral).
+async function filterActiveBundles(events) {
+  const CONCURRENCY = 8;
+  const out = [];
+  for (let i = 0; i < events.length; i += CONCURRENCY) {
+    const batch = events.slice(i, i + CONCURRENCY);
+    const results = await Promise.all(batch.map(async (e) => {
+      const bundleIdHex = e.topics[1];
+      try {
+        const owner = await rpcCall("eth_call", [{
+          to: BUNDLE_WRAPPER,
+          data: "0x6352211e" + bundleIdHex.slice(2),
+        }, "latest"], 8000);
+        if (!owner || owner === "0x") return null;
+        const ownerAddr = ("0x" + owner.slice(-40)).toLowerCase();
+        if (ownerAddr !== LOAN_ROUTER.toLowerCase()) return null;
+        return { event: e, owner: ownerAddr };
+      } catch {
+        return null;
+      }
+    }));
+    for (const r of results) if (r) out.push(r);
+  }
+  return out;
+}
+
+// Main entry: build (and cache) the index of active bundles, summing cv across
+// each bundle's underlying NFTs. Returns:
+//   { bundles: [{ bundleId, account, tokenIds, totalCv, gpuCounts }], byBorrower: Map }
+async function buildBundleIndex(metadataById, warnings) {
+  if (_bundleCache && (Date.now() - _bundleCache.ts) < BUNDLE_TTL_MS) {
+    return _bundleCache;
+  }
+  try {
+    const events = await fetchBundleMintedEvents();
+    const active = await filterActiveBundles(events);
+    const bundles = [];
+    for (const { event, owner } of active) {
+      const bundleIdHex = event.topics[1];
+      const accountAddr = ("0x" + event.topics[2].slice(-40)).toLowerCase();
+      const { contract, tokenIds } = decodeBundlePayload(event.data);
+      // Only consider bundles backed by the USD.AI Tokenized Hardware NFT
+      if (contract && contract !== HARDWARE_NFT.toLowerCase()) continue;
+      let totalCv = 0;
+      const gpuCounts = {};
+      const memberNfts = [];
+      for (const tid of tokenIds) {
+        const meta = metadataById.get(tid);
+        if (!meta) continue;
+        if (meta.collateralValueUsd != null) totalCv += meta.collateralValueUsd;
+        const gpu = extractGpuFromNftName(meta.name);
+        if (gpu) {
+          const perBundle = inferGpusPerNft(meta.name);
+          gpuCounts[gpu] = (gpuCounts[gpu] || 0) + perBundle;
+        }
+        memberNfts.push({ tokenId: tid, name: meta.name, cv: meta.collateralValueUsd });
+      }
+      bundles.push({
+        bundleId: bundleIdHex,
+        account: accountAddr,
+        owner,
+        tokenIds,
+        totalCv,
+        gpuCounts,
+        memberNfts,
+      });
+    }
+    // Group by borrower address
+    const byBorrower = new Map();
+    for (const b of bundles) {
+      const arr = byBorrower.get(b.account) || [];
+      arr.push(b);
+      byBorrower.set(b.account, arr);
+    }
+    _bundleCache = { ts: Date.now(), bundles, byBorrower };
+    return _bundleCache;
+  } catch (e) {
+    if (warnings) warnings.push(`bundleIndex: ${e.message}`);
+    return { ts: Date.now(), bundles: [], byBorrower: new Map() };
+  }
+}
+
+// Score how well a bundle's hardware composition matches a loan's hardware list.
+// Higher = better. Returns 0 if no overlap.
+function scoreBundleLoanMatch(bundle, loan) {
+  if (!bundle.gpuCounts || !loan.hardware?.length) return 0;
+  let score = 0;
+  for (const h of loan.hardware) {
+    const k = (h.name || "").replace(/^NVIDIA\s+/i, "").replace(/\s*Blackwell\s*$/i, "").trim();
+    const inBundle = bundle.gpuCounts[k] || 0;
+    if (inBundle > 0) {
+      // Exact GPU-count match gets a big bonus; otherwise reward presence.
+      score += (inBundle === h.count) ? 100 : 10;
+    }
+  }
+  return score;
 }
 
 async function fetchVastRentals(vastGpuName) {
@@ -185,7 +393,7 @@ async function fetchVastRentals(vastGpuName) {
 // back to `name` would incorrectly merge distinct loans that happen to share
 // a name (e.g. two different B300 [128] loans, one in OH, USA and one in
 // NSW, Australia, both have group: null and name: "B300 [128]").
-function aggregateLoanGroups(loans) {
+function aggregateLoanGroups(loans, bundleCvById = new Map()) {
   const byKey = new Map();
   for (const l of loans) {
     const key = l.group || l.documentId;
@@ -206,21 +414,44 @@ function aggregateLoanGroups(loans) {
       chain: l.chain,
       principal: 0,
       attestedUsd: 0,
-      attestedSourceMix: { "nft-aggregate": 0, "nft-per-server": 0, "replacement-cost": 0 },
+      attestedSourceMix: { "nft-aggregate": 0, "nft-bundle": 0, "nft-per-server": 0, "replacement-cost": 0 },
       hardware: new Map(),  // name → { name, count, vastGpuName, replacementCost, defaultLifeYears }
       loanCount: 0,
       documentIds: [],
       tokenIds: new Set(),
+      bundleIds: new Set(),
+      bundleNfts: [],
     };
     e.loanCount += 1;
     e.documentIds.push(l.documentId);
     if (l.tokenId != null) e.tokenIds.add(l.tokenId);
+    if (l.bundleId) e.bundleIds.add(l.bundleId);
+    if (Array.isArray(l.bundleNfts) && e.bundleNfts.length === 0) e.bundleNfts = l.bundleNfts;
     if (l.borrower) e.borrowers.add(l.borrower);
     if (l.isEscrowed) e.isEscrowed = true;
     if (l.escrowedType) e.escrowedTypes.add(l.escrowedType);
     if (l.principal) e.principal += l.principal;
-    if (l.attestedUsd) {
-      e.attestedUsd += l.attestedUsd;
+    // Dedupe attested cv at the group level:
+    //   - Sources backed by a specific bundleId or NFT tokenId count ONCE per group.
+    //   - Sources without a unique ID (per-server median, replacement-cost) sum per raw loan.
+    if (l.attestedUsd != null) {
+      e._countedBundleIds = e._countedBundleIds || new Set();
+      e._countedTokenIds = e._countedTokenIds || new Set();
+      let credit = 0;
+      if (l.bundleId && bundleCvById.has(l.bundleId)) {
+        if (!e._countedBundleIds.has(l.bundleId)) {
+          credit = bundleCvById.get(l.bundleId);
+          e._countedBundleIds.add(l.bundleId);
+        }
+      } else if (l.tokenId != null) {
+        if (!e._countedTokenIds.has(l.tokenId)) {
+          credit = l.attestedUsd;
+          e._countedTokenIds.add(l.tokenId);
+        }
+      } else {
+        credit = l.attestedUsd;
+      }
+      e.attestedUsd += credit;
       if (l.attestedSource) e.attestedSourceMix[l.attestedSource] = (e.attestedSourceMix[l.attestedSource] || 0) + 1;
     }
     for (const h of l.hardware || []) {
@@ -236,14 +467,17 @@ function aggregateLoanGroups(loans) {
     // Priority: aggregate > per-server > replacement-cost (best provenance first).
     let attestedSource = null;
     if (e.attestedSourceMix["nft-aggregate"] > 0)   attestedSource = "nft-aggregate";
+    else if (e.attestedSourceMix["nft-bundle"] > 0)     attestedSource = "nft-bundle";
     else if (e.attestedSourceMix["nft-per-server"] > 0) attestedSource = "nft-per-server";
     else if (e.attestedSourceMix["replacement-cost"] > 0) attestedSource = "replacement-cost";
+    const { _countedBundleIds, _countedTokenIds, ...rest } = e;
     return {
-      ...e,
+      ...rest,
       borrowers: [...e.borrowers],
       borrower: [...e.borrowers][0] || null,
       escrowedTypes: [...e.escrowedTypes],
       tokenIds: [...e.tokenIds],
+      bundleIds: [...e.bundleIds],
       hardware: [...e.hardware.values()],
       attestedSource,
     };
@@ -397,6 +631,8 @@ export default async function handler(req, res) {
   const tvlHistory = buildTvlHistory(usdaiHist, llama);
 
   const por_array = por || [];
+  // Pre-parse deal loans so we can do per-borrower bundle assignment in one pass.
+  const rawDeals = por_array.filter(x => x.type === "DEAL").map(parseLoanRow);
 
   // Fetch all NFT metadata across known tokenId ranges. We use it two ways:
   //   1. Aggregate roll-up join by exact loan name (1001+ range, e.g. "B200 [96]")
@@ -419,8 +655,49 @@ export default async function handler(req, res) {
   // Per-GPU price index from per-server NFTs.
   const perGpuIndex = buildPerGpuIndexFromNfts(metadataList);
 
+  // tokenId → metadata map (for bundle cv summation).
+  const metadataById = new Map(metadataList.map(m => [m.tokenId, m]));
+
+  // Build the bundle index from on-chain events. Cached at module level.
+  const bundleIndex = await buildBundleIndex(metadataById, warnings);
+
+  // ── Per-borrower greedy bundle assignment ──────────────────────────────────
+  // For each borrower, distribute their active bundles 1:1 across their raw
+  // loans. A bundle is preferentially assigned to the loan whose hardware
+  // composition best matches the bundle's gpuCounts.
+  // Each bundle gets used ONCE; leftover loans (more loans than bundles) fall
+  // through to per-server-NFT median or replacement-cost in the layered logic.
+  const loanBundleAssignment = new Map(); // documentId → bundle object
+  const loansByBorrower = new Map();
+  for (const l of rawDeals) {
+    const b = (l.borrower || "").toLowerCase();
+    if (!loansByBorrower.has(b)) loansByBorrower.set(b, []);
+    loansByBorrower.get(b).push(l);
+  }
+  for (const [borrower, borrowerLoans] of loansByBorrower) {
+    const availableBundles = [...(bundleIndex.byBorrower.get(borrower) || [])];
+    if (availableBundles.length === 0) continue;
+    const remainingLoans = borrowerLoans.slice().sort((a, b) => (b.principal || 0) - (a.principal || 0));
+    // Greedy: each bundle picks its best loan, removing the loan from the pool.
+    const bundlesByScore = availableBundles.slice().sort((a, b) => {
+      // Larger bundles (more NFTs / higher cv) get first pick
+      return (b.totalCv || 0) - (a.totalCv || 0);
+    });
+    for (const bundle of bundlesByScore) {
+      if (remainingLoans.length === 0) break;
+      // Find the loan whose hardware best matches this bundle's gpuCounts
+      let bestIdx = 0, bestScore = -1;
+      for (let i = 0; i < remainingLoans.length; i++) {
+        const s = scoreBundleLoanMatch(bundle, remainingLoans[i]);
+        if (s > bestScore) { bestScore = s; bestIdx = i; }
+      }
+      const matched = remainingLoans.splice(bestIdx, 1)[0];
+      loanBundleAssignment.set(matched.documentId, bundle);
+    }
+  }
+
   const tbills = por_array.filter(x => x.type === "TBILL").map(parseTbillRow);
-  const loans = por_array.filter(x => x.type === "DEAL").map(parseLoanRow).map(loan => {
+  const loans = rawDeals.map(loan => {
     const key = (loan.name || "").replace(/^NVIDIA\s+/i, "").trim();
     const aggMeta = nameToAggregateMeta.get(key);
     // Enrich each hardware item with its GPU-map lookup (Vast.ai proxy info)
@@ -444,24 +721,40 @@ export default async function handler(req, res) {
       };
     });
 
-    // Layered attested-USD resolution:
-    //   1. Aggregate roll-up NFT by exact name (e.g. "B200 [96]") — best
-    //   2. Per-server NFT price × hardware count — derived from USDai's own NFTs
-    //   3. Replacement-cost guess (last resort, only when no NFT data exists)
+    // Layered attested-USD resolution (best provenance first):
+    //   1. Aggregate roll-up NFT by exact name (e.g. "B200 [96]") — direct match
+    //   2. On-chain BUNDLE indexer by borrower address — sums all NFTs the loan
+    //      router actually holds against this loan (per-server + infrastructure)
+    //   3. Per-server NFT price × hardware count — derived but loose estimate
+    //   4. Replacement-cost guess (last resort)
     let attestedUsd = null, attestedSource = null;
+    let matchedBundleId = null, matchedBundleNfts = null;
+
     if (aggMeta) {
       attestedUsd = aggMeta.collateralValueUsd;
       attestedSource = "nft-aggregate";
     } else {
-      const v = estimateFromPerGpuIndex(hardware, perGpuIndex);
-      if (v != null) {
-        attestedUsd = v;
-        attestedSource = "nft-per-server";
-      } else {
-        const v2 = estimateFromReplacementCost(hardware);
-        if (v2 != null) {
-          attestedUsd = v2;
-          attestedSource = "replacement-cost";
+      // Use the per-borrower bundle assignment computed above (each bundle
+      // assigned to exactly one raw loan).
+      const assignedBundle = loanBundleAssignment.get(loan.documentId);
+      if (assignedBundle) {
+        attestedUsd = assignedBundle.totalCv;
+        attestedSource = "nft-bundle";
+        matchedBundleId = assignedBundle.bundleId;
+        matchedBundleNfts = assignedBundle.memberNfts;
+      }
+
+      if (attestedUsd == null) {
+        const v = estimateFromPerGpuIndex(hardware, perGpuIndex);
+        if (v != null) {
+          attestedUsd = v;
+          attestedSource = "nft-per-server";
+        } else {
+          const v2 = estimateFromReplacementCost(hardware);
+          if (v2 != null) {
+            attestedUsd = v2;
+            attestedSource = "replacement-cost";
+          }
         }
       }
     }
@@ -470,6 +763,8 @@ export default async function handler(req, res) {
       ...loan,
       hardware,
       tokenId: aggMeta?.tokenId ?? null,
+      bundleId: matchedBundleId,
+      bundleNfts: matchedBundleNfts,
       attestedUsd,
       attestedSource,
       attestedUsefulLifeDays: aggMeta?.usefulLifeDays ?? null,
@@ -516,7 +811,11 @@ export default async function handler(req, res) {
     mintedUsdai: tvl?.mintedUsdai ?? null,
   };
 
-  const loanGroups = aggregateLoanGroups(loans);
+  // Build a bundleId → totalCv lookup so aggregateLoanGroups can dedupe.
+  const bundleCvById = new Map();
+  for (const b of bundleIndex.bundles) bundleCvById.set(b.bundleId, b.totalCv);
+
+  const loanGroups = aggregateLoanGroups(loans, bundleCvById);
 
   return res.status(200).json({
     updatedAt: new Date().toISOString(),
