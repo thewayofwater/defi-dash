@@ -9,24 +9,25 @@ const mono = "'JetBrains Mono', monospace";
 /**
  * LTV deleverage chart for a single loan.
  *
- * Normalized to % of original collateral value (matches USDai's own slide).
+ * Matches USDai's reference slide where the Y-axis carries TWO different
+ * percentages plotted on the same axis:
+ *   - GPU collateral line: % of ORIGINAL collateral value (depreciation)
+ *   - Loan line:           CURRENT LTV ratio (= principal / current collateral)
  *
- * Model (per USDai docs: "amortization calibrated to GPU depreciation curve;
- * loan originated at 80% LTV deleverages to ~65% LTV by end of year one as
- * principal pays down faster than collateral value declines"):
+ * So at origination both lines start where the protocol underwrote them
+ * (GPU = 100%, Loan = origLtv, e.g. 80%). Over time:
+ *   - GPU drops because the hardware depreciates
+ *   - LTV drops because principal amortizes FASTER than collateral
+ *     depreciates → the loan deleverages
  *
- *   collateral(t) = 100% → residualAtMaturity% linearly over termYears,
- *                   then continues to 0% over the remaining physical life
- *   principal(t)  = origLtv → 0% linearly over termYears (straight-line)
+ * The equity cushion is the gap between the two lines.
  *
- * residualAtMaturity is the key parameter. USDai's reference slide shows the
- * GPU at ~30% of original value at term-end (year 3 for a 3-year loan), so
- * we default to 0.30. This is what causes LTV to deleverage: principal
- * amortizes to 0% while collateral retains real residual value.
+ * Model per USDai docs: "amortization calibrated to GPU depreciation curve;
+ * loan originated at 80% LTV deleverages to ~65% LTV by end of year one":
  *
- * The equity cushion is the area BETWEEN the two lines — implemented as a
- * stacked Area on top of the principal Area so they sum to the collateral
- * line at every x.
+ *   collateral(t in [0, term]) = 100% → residualAtMaturity% (linear)
+ *   principal(t in [0, term])  = origLtv → 0% (linear, straight-line amort)
+ *   LTV(t) = principal(t) / collateral(t)
  */
 export default function LoanLifecycleChart({
   originationDate, maturityDate, originalPrincipal, originalCollateral,
@@ -65,39 +66,39 @@ export default function LoanLifecycleChart({
     return origLtv * Math.max(0, 1 - yearsFromOrig / termYears);
   }
 
+  // LTV at time t = principal(t) / collateral(t). When collateral hits zero
+  // post-maturity we clamp LTV to 0.
+  function ltvAt(yearsFromOrig) {
+    const c = collateralFracAt(yearsFromOrig);
+    const p = principalFracAt(yearsFromOrig);
+    return c > 0 ? p / c : 0;
+  }
+
   // Sample 60 points across the lifecycle, with an extra point exactly at
-  // maturity so the chart shows the kink there cleanly.
+  // maturity for a clean kink.
   const points = [];
   const N = 60;
   for (let i = 0; i <= N; i++) {
     const t = originationDate + (horizonEnd - originationDate) * (i / N);
     const yearsFromOrig = (t - originationDate) / yearMs;
-    const collateralFrac = collateralFracAt(yearsFromOrig);
-    const principalFrac  = principalFracAt(yearsFromOrig);
-    const equityFrac = Math.max(0, collateralFrac - principalFrac);
-    points.push({ t, principalFrac, equityFrac, collateralFrac });
+    const gpu = collateralFracAt(yearsFromOrig);
+    const ltv = ltvAt(yearsFromOrig);
+    // For stacked-area equity cushion: ltvArea + cushionArea = gpu line.
+    points.push({ t, ltv, cushion: Math.max(0, gpu - ltv), gpu });
   }
-  // Insert maturity sample (sorted)
-  const maturityYears = termYears;
-  points.push({
-    t: maturityDate,
-    principalFrac: 0,
-    collateralFrac: collateralFracAt(maturityYears),
-    equityFrac: collateralFracAt(maturityYears),
-  });
+  // Insert maturity sample
+  const maturityGpu = collateralFracAt(termYears);
+  points.push({ t: maturityDate, ltv: 0, cushion: maturityGpu, gpu: maturityGpu });
   points.sort((a, b) => a.t - b.t);
 
   // Today's values
   const todayYears = Math.max(0, (now - originationDate) / yearMs);
-  const todayCollateralFrac = collateralFracAt(todayYears);
-  const todayPrincipalFrac  = principalFracAt(todayYears);
-  const todayLtv = todayCollateralFrac > 0 ? (todayPrincipalFrac / todayCollateralFrac) * 100 : null;
-  const todayEquityUsd = (todayCollateralFrac - todayPrincipalFrac) * originalCollateral;
+  const todayGpu = collateralFracAt(todayYears);
+  const todayLtv = ltvAt(todayYears);
+  const todayEquityUsd = (todayGpu - todayLtv) * originalCollateral;
 
   // Year-1 LTV for the header annotation (matches USDai's example phrasing)
-  const y1Collat = collateralFracAt(1);
-  const y1Princ  = principalFracAt(1);
-  const y1Ltv    = y1Collat > 0 && termYears >= 1 ? (y1Princ / y1Collat) * 100 : null;
+  const y1Ltv = termYears >= 1 ? ltvAt(1) : null;
 
   const fmtPct = (v) => `${Math.round(v * 100)}%`;
   const fmtUsd = (n) => {
@@ -115,16 +116,16 @@ export default function LoanLifecycleChart({
       <div style={{ fontSize: 10, color: "#6b7a8d", fontFamily: mono, marginBottom: 6, display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 10 }}>
         <span style={{ letterSpacing: 1, textTransform: "uppercase" }}>LTV Deleverage</span>
         <span>
-          Origination: <span style={{ color: "#e2e8f0" }}>{Math.round(origLtv * 100)}%</span>
-          {y1Ltv != null && <>{"  ·  "}Year 1: <span style={{ color: "#e2e8f0" }}>{y1Ltv.toFixed(0)}%</span></>}
-          {"  ·  "}Today: <span style={{ color: "#e2e8f0" }}>{todayLtv != null ? `${todayLtv.toFixed(0)}%` : "—"}</span>
+          LTV → Origination: <span style={{ color: "#e2e8f0" }}>{Math.round(origLtv * 100)}%</span>
+          {y1Ltv != null && <>{"  ·  "}Year 1: <span style={{ color: "#e2e8f0" }}>{Math.round(y1Ltv * 100)}%</span></>}
+          {"  ·  "}Today: <span style={{ color: "#e2e8f0" }}>{todayLtv != null ? `${Math.round(todayLtv * 100)}%` : "—"}</span>
           {"  ·  "}Equity: <span style={{ color: "#e2e8f0" }}>{fmtUsd(todayEquityUsd)}</span>
         </span>
       </div>
       <div style={{ display: "flex", gap: 14, marginBottom: 6, flexWrap: "wrap" }}>
         <div style={legendItemStyle}>
           <span style={{ width: 16, height: 2, background: accent, display: "inline-block" }} />
-          Loan principal
+          Loan LTV
         </div>
         <div style={legendItemStyle}>
           <span style={{ width: 16, display: "inline-block", borderTop: "1.5px dashed #94a3b8" }} />
@@ -155,16 +156,16 @@ export default function LoanLifecycleChart({
               contentStyle={{ background: "#131926", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 5, fontSize: 10, fontFamily: mono, color: "#e2e8f0" }}
               labelFormatter={(v) => new Date(v).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
               formatter={(v, k) => {
-                const labelMap = { principalFrac: "Loan principal", equityFrac: "Equity cushion", collateralFrac: "GPU collateral" };
-                return [`${fmtPct(v)} (${fmtUsd(v * originalCollateral)})`, labelMap[k] || k];
+                if (k === "cushion") return [null, null];  // hide stacked-area helper from tooltip
+                const labelMap = { ltv: "Loan LTV", gpu: "GPU collateral" };
+                return [fmtPct(v), labelMap[k] || k];
               }} />
-            {/* Stack principal (bottom) + equity (top) so equity area visually sits between the two lines. */}
-            <Area type="monotone" dataKey="principalFrac" stackId="v" stroke={accent} strokeWidth={2}
-              fill={accent} fillOpacity={0.0} name="principalFrac" />
-            <Area type="monotone" dataKey="equityFrac" stackId="v" stroke="none"
-              fill={accent} fillOpacity={0.18} name="equityFrac" />
-            {/* Dashed collateral line on top so it's a distinct curve, not just the top edge of a fill */}
-            <Line type="monotone" dataKey="collateralFrac" stroke="#94a3b8" strokeDasharray="4 3" strokeWidth={1.5} dot={false} name="collateralFrac" />
+            {/* Stack hidden LTV-base + visible cushion so the shaded region sits between the two lines. */}
+            <Area type="monotone" dataKey="ltv" stackId="v" stroke="none" fill="transparent" name="ltv-base" legendType="none" />
+            <Area type="monotone" dataKey="cushion" stackId="v" stroke="none" fill={accent} fillOpacity={0.18} name="cushion" legendType="none" />
+            {/* Lines on top */}
+            <Line type="monotone" dataKey="gpu" stroke="#94a3b8" strokeDasharray="4 3" strokeWidth={1.5} dot={false} name="gpu" />
+            <Line type="monotone" dataKey="ltv" stroke={accent} strokeWidth={2} dot={false} name="ltv" />
             <ReferenceLine x={now} stroke="#22d3ee" strokeWidth={1} strokeDasharray="2 2"
               label={{ value: "today", position: "top", fill: "#22d3ee", fontSize: 9, fontFamily: mono }} />
             <ReferenceLine x={maturityDate} stroke="#4f5e6f" strokeWidth={1}
