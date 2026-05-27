@@ -6,6 +6,7 @@ import {
 import { useUsdaiData } from "../hooks/useUsdaiData";
 import { SectionHeader, LoadingSpinner, ModuleCard } from "../components/Shared";
 import { DCF_DEFAULTS, aggregateByModel, modelComparison } from "../utils/usdai-dcf";
+import LoanLifecycleChart from "../components/LoanLifecycleChart";
 
 const UsdaiGlobe = React.lazy(() => import("../components/UsdaiGlobe"));
 
@@ -163,6 +164,14 @@ function LoansTable({ groups, selectedKey, onSelect, accent }) {
                             </div>
                           )}
                         </div>
+                        <LoanLifecycleChart
+                          originationDate={g.originationDate}
+                          maturityDate={g.maturityDate}
+                          originalPrincipal={g.principal}
+                          originalCollateral={g.attestedUsd}
+                          usefulLifeDays={g.attestedUsefulLifeDays || 1080}
+                          accent={accent}
+                        />
                       </td>
                     </tr>
                   )}

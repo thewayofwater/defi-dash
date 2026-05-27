@@ -10,6 +10,8 @@ const BUNDLE_WRAPPER = "0x80E3146FB2328fE1b79f92F5a3a6bF35515AEe37"; // BundleCo
 const LOAN_ROUTER    = "0x0C2ED170F2bB1DF1a44292Ad621B577b3C9597D1"; // active-bundle holder
 // keccak256("BundleMinted(uint256,address,bytes)") — computed once via web3_sha3
 const TOPIC_BUNDLE_MINTED = "0x448434564de2b5ad2b94efb65ddb08d1d069f1172cff44e3092314d4b6490871";
+// keccak256("Transfer(address,address,uint256)") — ERC-721 standard event
+const TOPIC_TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 // Sweep range — bundles were first minted around block 400M; widen the start
 // if you find unwrapped/older ones during refresh.
 const BUNDLE_SWEEP_FROM = 350_000_000;
@@ -18,8 +20,13 @@ const BUNDLE_SWEEP_CHUNK = 5_000_000;
 // Module-level cache for the bundle index. Vercel keeps the module warm across
 // requests, so this is a process-wide cache. TTL is 30 min — bundles are rare
 // events (one per new loan).
-let _bundleCache = null; // { ts, bundles, byBorrower }
+let _bundleCache = null; // { ts, bundles, byBorrower, aggregateOrigination }
 const BUNDLE_TTL_MS = 30 * 60 * 1000;
+
+// Block timestamp cache — block timestamps never change, so cache forever.
+const _blockTimestampCache = new Map();
+// tokenId → origination timestamp (ms) cache for aggregate NFTs
+const _aggregateOriginationCache = new Map();
 
 // Stage codes confirmed via proof-of-reserves probe (see plan Task 0 notes).
 // Update if USDai changes the schema.
@@ -252,6 +259,50 @@ async function fetchBundleMintedEvents() {
   });
 }
 
+// Resolve a block number (hex or int) to a Unix timestamp in ms.
+async function getBlockTimestamp(blockHex) {
+  const key = typeof blockHex === "number" ? blockHex : parseInt(blockHex, 16);
+  if (_blockTimestampCache.has(key)) return _blockTimestampCache.get(key);
+  try {
+    const blk = await rpcCall("eth_getBlockByNumber", [
+      typeof blockHex === "string" ? blockHex : "0x" + key.toString(16),
+      false,
+    ], 8000);
+    if (!blk?.timestamp) return null;
+    const ms = parseInt(blk.timestamp, 16) * 1000;
+    _blockTimestampCache.set(key, ms);
+    return ms;
+  } catch {
+    return null;
+  }
+}
+
+// Find origination timestamp for an aggregate NFT (tokens 1001+) — the first
+// Transfer event for that tokenId on the hardware contract is the mint.
+async function getAggregateOrigination(tokenId) {
+  if (_aggregateOriginationCache.has(tokenId)) return _aggregateOriginationCache.get(tokenId);
+  const topic3 = "0x" + tokenId.toString(16).padStart(64, "0");
+  try {
+    const logs = await rpcCall("eth_getLogs", [{
+      address: HARDWARE_NFT,
+      topics: [TOPIC_TRANSFER, null, null, topic3],
+      fromBlock: "0x" + BUNDLE_SWEEP_FROM.toString(16),
+      toBlock: "latest",
+    }], 15000);
+    if (!logs?.length) {
+      _aggregateOriginationCache.set(tokenId, null);
+      return null;
+    }
+    // Earliest block is the mint
+    logs.sort((a, b) => parseInt(a.blockNumber, 16) - parseInt(b.blockNumber, 16));
+    const ts = await getBlockTimestamp(logs[0].blockNumber);
+    _aggregateOriginationCache.set(tokenId, ts);
+    return ts;
+  } catch {
+    return null;
+  }
+}
+
 // Given an array of BundleMinted events, check current owner of each bundle
 // and return only those still held by the LoanRouter (i.e. active collateral).
 async function filterActiveBundles(events) {
@@ -318,8 +369,16 @@ async function buildBundleIndex(metadataById, warnings) {
         totalCv,
         gpuCounts,
         memberNfts,
+        blockNumber: event.blockNumber,
+        originationDate: null,  // filled in below
       });
     }
+
+    // Fetch block timestamps for each bundle's BundleMinted event in parallel.
+    await Promise.all(bundles.map(async (b) => {
+      b.originationDate = await getBlockTimestamp(b.blockNumber);
+    }));
+
     // Group by borrower address
     const byBorrower = new Map();
     for (const b of bundles) {
@@ -327,7 +386,20 @@ async function buildBundleIndex(metadataById, warnings) {
       arr.push(b);
       byBorrower.set(b.account, arr);
     }
-    _bundleCache = { ts: Date.now(), bundles, byBorrower };
+
+    // Also resolve origination for aggregate NFTs (1001+). Tokens that aren't
+    // aggregates will return null — we filter those out.
+    const aggregateOrigination = new Map();
+    const aggregateTokenIds = [];
+    for (const [tid, meta] of metadataById) {
+      if (meta?.quantity && meta.quantity > 1) aggregateTokenIds.push(tid);
+    }
+    await Promise.all(aggregateTokenIds.map(async (tid) => {
+      const ts = await getAggregateOrigination(tid);
+      if (ts) aggregateOrigination.set(tid, ts);
+    }));
+
+    _bundleCache = { ts: Date.now(), bundles, byBorrower, aggregateOrigination };
     return _bundleCache;
   } catch (e) {
     if (warnings) warnings.push(`bundleIndex: ${e.message}`);
@@ -414,6 +486,9 @@ function aggregateLoanGroups(loans, bundleCvById = new Map()) {
       chain: l.chain,
       principal: 0,
       attestedUsd: 0,
+      attestedUsefulLifeDays: l.attestedUsefulLifeDays || 1080,
+      originationDate: l.originationDate || null,
+      maturityDate: l.maturityDate || null,
       attestedSourceMix: { "nft-aggregate": 0, "nft-bundle": 0, "nft-per-server": 0, "replacement-cost": 0 },
       hardware: new Map(),  // name → { name, count, vastGpuName, replacementCost, defaultLifeYears }
       loanCount: 0,
@@ -431,6 +506,9 @@ function aggregateLoanGroups(loans, bundleCvById = new Map()) {
     if (l.isEscrowed) e.isEscrowed = true;
     if (l.escrowedType) e.escrowedTypes.add(l.escrowedType);
     if (l.principal) e.principal += l.principal;
+    // Keep the first non-null origination/maturity we encounter in the group.
+    if (e.originationDate == null && l.originationDate != null) e.originationDate = l.originationDate;
+    if (e.maturityDate == null && l.maturityDate != null) e.maturityDate = l.maturityDate;
     // Dedupe attested cv at the group level:
     //   - Sources backed by a specific bundleId or NFT tokenId count ONCE per group.
     //   - Sources without a unique ID (per-server median, replacement-cost) sum per raw loan.
@@ -729,10 +807,12 @@ export default async function handler(req, res) {
     //   4. Replacement-cost guess (last resort)
     let attestedUsd = null, attestedSource = null;
     let matchedBundleId = null, matchedBundleNfts = null;
+    let originationDate = null;
 
     if (aggMeta) {
       attestedUsd = aggMeta.collateralValueUsd;
       attestedSource = "nft-aggregate";
+      originationDate = bundleIndex.aggregateOrigination?.get(aggMeta.tokenId) ?? null;
     } else {
       // Use the per-borrower bundle assignment computed above (each bundle
       // assigned to exactly one raw loan).
@@ -742,6 +822,7 @@ export default async function handler(req, res) {
         attestedSource = "nft-bundle";
         matchedBundleId = assignedBundle.bundleId;
         matchedBundleNfts = assignedBundle.memberNfts;
+        originationDate = assignedBundle.originationDate;
       }
 
       if (attestedUsd == null) {
@@ -767,8 +848,11 @@ export default async function handler(req, res) {
       bundleNfts: matchedBundleNfts,
       attestedUsd,
       attestedSource,
-      attestedUsefulLifeDays: aggMeta?.usefulLifeDays ?? null,
+      attestedUsefulLifeDays: aggMeta?.usefulLifeDays ?? 1080,
       manufacturer: aggMeta?.manufacturer ?? null,
+      originationDate,
+      maturityDate: (originationDate != null && loan.termSeconds)
+        ? originationDate + (loan.termSeconds * 1000) : null,
     };
   });
 
