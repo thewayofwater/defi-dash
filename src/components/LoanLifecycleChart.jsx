@@ -9,22 +9,14 @@ const mono = "'JetBrains Mono', monospace";
 /**
  * LTV deleverage chart for a single loan.
  *
- * Model:
- *   collateral(t) = originalCollateral × max(0, 1 − t/usefulLifeYears)
- *   principal(t)  = originalPrincipal × max(0, 1 − t/termYears)
- *   equity(t)     = collateral(t) − principal(t)
+ * Normalized to % of original collateral value (matches USDai's own slide).
+ * Collateral starts at 100% and depreciates linearly to 0% over useful life.
+ * Principal starts at the origination LTV (principal / collateral) and
+ * amortizes linearly to 0% over the loan term.
  *
- * Both lines are linear-to-zero (matching USDai's own visualization). The
- * "today" reference line shows where in the lifecycle the loan currently
- * sits.
- *
- * Props:
- *   originationDate: ms timestamp (number)
- *   maturityDate:    ms timestamp (number)
- *   originalPrincipal: number (we use current principal as proxy)
- *   originalCollateral: number
- *   usefulLifeDays: number (defaults 1080)
- *   accent: hex color for principal line
+ * The equity cushion is the area BETWEEN the two lines — implemented as a
+ * stacked Area on top of the principal Area, so they sum to the collateral
+ * line at every x.
  */
 export default function LoanLifecycleChart({
   originationDate, maturityDate, originalPrincipal, originalCollateral,
@@ -43,25 +35,31 @@ export default function LoanLifecycleChart({
   const termYears  = (maturityDate - originationDate) / yearMs;
   const lifeYears  = usefulLifeDays / 365;
   const horizonEnd = Math.max(maturityDate, originationDate + lifeYears * yearMs);
+  const origLtv    = originalPrincipal / originalCollateral; // e.g. 0.57
 
-  // Sample 50 points across the lifecycle for a smooth chart
+  // Sample 60 points across the lifecycle
   const points = [];
-  const N = 50;
+  const N = 60;
   for (let i = 0; i <= N; i++) {
     const t = originationDate + (horizonEnd - originationDate) * (i / N);
     const yearsFromOrig = (t - originationDate) / yearMs;
-    const collateral = originalCollateral * Math.max(0, 1 - yearsFromOrig / lifeYears);
-    const principal  = originalPrincipal  * Math.max(0, 1 - yearsFromOrig / termYears);
-    const equity     = Math.max(0, collateral - principal);
-    points.push({ t, collateral, principal, equity });
+    const collateralFrac = Math.max(0, 1 - yearsFromOrig / lifeYears);
+    const principalFrac  = origLtv * Math.max(0, 1 - yearsFromOrig / termYears);
+    // The equity cushion is the visual gap between principal and collateral.
+    // Stacking principal (bottom) + equity (top) gives areas that sum to
+    // collateralFrac at every x, which is exactly what we want visually.
+    const equityFrac = Math.max(0, collateralFrac - principalFrac);
+    points.push({ t, principalFrac, equityFrac, collateralFrac });
   }
 
-  // Today's interpolated values
+  // Today's values
   const todayYears = Math.max(0, (now - originationDate) / yearMs);
-  const todayCollateral = originalCollateral * Math.max(0, 1 - todayYears / lifeYears);
-  const todayPrincipal  = originalPrincipal  * Math.max(0, 1 - todayYears / termYears);
-  const todayLtv = todayCollateral > 0 ? (todayPrincipal / todayCollateral) * 100 : null;
+  const todayCollateralFrac = Math.max(0, 1 - todayYears / lifeYears);
+  const todayPrincipalFrac  = origLtv * Math.max(0, 1 - todayYears / termYears);
+  const todayLtv = todayCollateralFrac > 0 ? (todayPrincipalFrac / todayCollateralFrac) * 100 : null;
+  const todayEquityUsd = (todayCollateralFrac - todayPrincipalFrac) * originalCollateral;
 
+  const fmtPct = (v) => `${Math.round(v * 100)}%`;
   const fmtUsd = (n) => {
     if (n == null) return "—";
     if (Math.abs(n) >= 1e6) return `$${(n/1e6).toFixed(2)}M`;
@@ -74,9 +72,15 @@ export default function LoanLifecycleChart({
 
   return (
     <div style={{ marginTop: 10 }}>
-      <div style={{ fontSize: 10, color: "#6b7a8d", fontFamily: mono, marginBottom: 6, display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+      <div style={{ fontSize: 10, color: "#6b7a8d", fontFamily: mono, marginBottom: 6, display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 10 }}>
         <span style={{ letterSpacing: 1, textTransform: "uppercase" }}>LTV Deleverage</span>
-        <span>Today: LTV {todayLtv != null ? `${todayLtv.toFixed(0)}%` : "—"} · Equity {fmtUsd(todayCollateral - todayPrincipal)}</span>
+        <span>
+          Origination LTV: <span style={{ color: "#e2e8f0" }}>{Math.round(origLtv * 100)}%</span>
+          {"  ·  "}
+          Today LTV: <span style={{ color: "#e2e8f0" }}>{todayLtv != null ? `${todayLtv.toFixed(0)}%` : "—"}</span>
+          {"  ·  "}
+          Equity: <span style={{ color: "#e2e8f0" }}>{fmtUsd(todayEquityUsd)}</span>
+        </span>
       </div>
       <div style={{ display: "flex", gap: 14, marginBottom: 6, flexWrap: "wrap" }}>
         <div style={legendItemStyle}>
@@ -96,7 +100,7 @@ export default function LoanLifecycleChart({
           Today
         </div>
       </div>
-      <div style={{ width: "100%", height: 170 }}>
+      <div style={{ width: "100%", height: 200 }}>
         <ResponsiveContainer>
           <ComposedChart data={points} margin={{ top: 6, right: 12, left: 0, bottom: 4 }}>
             <CartesianGrid stroke="rgba(255,255,255,0.04)" />
@@ -105,16 +109,23 @@ export default function LoanLifecycleChart({
               tickFormatter={fmtDate}
               tick={{ fill: "#6b7a8d", fontSize: 9, fontFamily: mono }}
               minTickGap={50} />
-            <YAxis tickFormatter={fmtUsd}
+            <YAxis tickFormatter={fmtPct} domain={[0, 1]}
               tick={{ fill: "#6b7a8d", fontSize: 9, fontFamily: mono }}
-              width={50} />
+              width={42} />
             <Tooltip
               contentStyle={{ background: "#131926", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 5, fontSize: 10, fontFamily: mono, color: "#e2e8f0" }}
               labelFormatter={(v) => new Date(v).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
-              formatter={(v, k) => [fmtUsd(v), k]} />
-            <Area type="monotone" dataKey="equity" stroke="none" fill={accent} fillOpacity={0.15} name="Equity cushion" />
-            <Line type="monotone" dataKey="collateral" stroke="#94a3b8" strokeDasharray="4 3" strokeWidth={1.5} dot={false} name="Collateral value" />
-            <Line type="monotone" dataKey="principal"  stroke={accent}  strokeWidth={2} dot={false} name="Loan principal" />
+              formatter={(v, k) => {
+                const labelMap = { principalFrac: "Loan principal", equityFrac: "Equity cushion", collateralFrac: "GPU collateral" };
+                return [`${fmtPct(v)} (${fmtUsd(v * originalCollateral)})`, labelMap[k] || k];
+              }} />
+            {/* Stack principal (bottom) + equity (top) so equity area visually sits between the two lines. */}
+            <Area type="monotone" dataKey="principalFrac" stackId="v" stroke={accent} strokeWidth={2}
+              fill={accent} fillOpacity={0.0} name="principalFrac" />
+            <Area type="monotone" dataKey="equityFrac" stackId="v" stroke="none"
+              fill={accent} fillOpacity={0.18} name="equityFrac" />
+            {/* Dashed collateral line on top so it's a distinct curve, not just the top edge of a fill */}
+            <Line type="monotone" dataKey="collateralFrac" stroke="#94a3b8" strokeDasharray="4 3" strokeWidth={1.5} dot={false} name="collateralFrac" />
             <ReferenceLine x={now} stroke="#22d3ee" strokeWidth={1} strokeDasharray="2 2"
               label={{ value: "today", position: "top", fill: "#22d3ee", fontSize: 9, fontFamily: mono }} />
             <ReferenceLine x={maturityDate} stroke="#4f5e6f" strokeWidth={1}
