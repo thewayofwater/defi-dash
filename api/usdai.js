@@ -8,14 +8,107 @@ const LLAMA = "https://api.llama.fi/protocol/usd-ai";
 const STAGE_DEPLOYED = 6;
 
 // Verified working tokenId ranges on metadata.usd.ai/v1/<id> (see plan notes).
-// Generous upper bounds — fetcher tolerates 404s.
+// Generous upper bounds — fetcher tolerates 404s. Widened after discovering
+// per-server NFTs extending past 410.
 const TOKEN_ID_RANGES = [
-  [101, 220],
-  [251, 262],
-  [301, 353],
-  [401, 410],
-  [1001, 1010],
+  [101, 230],
+  [251, 280],
+  [301, 360],
+  [401, 500],
+  [1001, 1020],
 ];
+
+// Extract a normalized GPU model key from a per-server NFT's `name` so we can
+// bucket NFTs by model and compute per-GPU price stats. Examples:
+//   "Supermicro NVIDIA B300 Server"            → "B300"
+//   "Supermicro NVIDIA RTX 6000 Pro Server"    → "RTX PRO 6000"
+//   "Octoserver NVIDIA Pro 6000 Blackwell..."  → "RTX PRO 6000"
+//   "Asus NVIDIA RTX PRO 6000"                 → "RTX PRO 6000"
+//   "DGC Zotac NVIDIA GeForce RTX 5090 Server" → "RTX 5090"
+//   "Nvidia H200 x8 Server"                    → "H200"
+//   "Supermicro B200 8-GPU Server 10.5.0.10"   → "B200"
+function extractGpuFromNftName(name) {
+  if (!name) return null;
+  const n = name.toLowerCase();
+  if (/\bb300\b/.test(n))   return "B300";
+  if (/\bb200\b/.test(n))   return "B200";
+  if (/\bh200\b/.test(n))   return "H200";
+  if (/\bh100\b/.test(n))   return "H100";
+  if (/rtx[\s_]*5090/.test(n))  return "RTX 5090";
+  if (/rtx[\s_]*4090/.test(n))  return "RTX 4090";
+  // Various spellings: "RTX PRO 6000", "RTX 6000 Pro", "Pro 6000 Blackwell"
+  if (/(?:rtx[\s_]*pro[\s_]*6000|rtx[\s_]*6000[\s_]*pro|\bpro[\s_]*6000[\s_]*blackwell)/.test(n)) return "RTX PRO 6000";
+  if (/\ba100\b/.test(n))   return "A100";
+  if (/\bl40s\b/.test(n))   return "L40S";
+  if (/\bl40\b/.test(n))    return "L40";
+  return null;
+}
+
+// Infer how many GPUs are packaged in a single per-server NFT bundle from
+// its name. Most server NFTs are 1 GPU; some are explicitly multi-GPU.
+//   "Supermicro B200 8-GPU Server" → 8
+//   "Nvidia H200 x8 Server"        → 8
+//   "Supermicro NVIDIA B300 Server" → 1
+function inferGpusPerNft(name) {
+  if (!name) return 1;
+  const m1 = name.match(/(\d+)[-\s]?gpu/i);
+  if (m1) return parseInt(m1[1], 10);
+  const m2 = name.match(/\bx\s*(\d+)\b/i);
+  if (m2) return parseInt(m2[1], 10);
+  return 1;
+}
+
+function median(arr) {
+  const a = arr.filter(x => Number.isFinite(x) && x > 0).sort((x, y) => x - y);
+  if (!a.length) return null;
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+}
+
+// From all fetched NFTs, build a per-GPU-model price index using per-server
+// NFTs (qty=1). Aggregate roll-up NFTs (qty>1) are excluded from this index
+// because their cv includes network fabric / infra that doesn't scale 1:1
+// with GPU count.
+function buildPerGpuIndexFromNfts(metadataList) {
+  const buckets = new Map(); // model → { perGpuValues: [], samples: [] }
+  for (const m of metadataList) {
+    if (!m || m.collateralValueUsd == null) continue;
+    if (m.quantity != null && m.quantity > 1) continue; // skip aggregate roll-ups
+    const model = extractGpuFromNftName(m.name);
+    if (!model) continue;
+    const gpusPerBundle = inferGpusPerNft(m.name);
+    const perGpu = m.collateralValueUsd / Math.max(1, gpusPerBundle);
+    const b = buckets.get(model) || { perGpuValues: [], samples: [] };
+    b.perGpuValues.push(perGpu);
+    b.samples.push({ tokenId: m.tokenId, name: m.name, cv: m.collateralValueUsd, gpusPerBundle });
+    buckets.set(model, b);
+  }
+  const out = {};
+  for (const [model, b] of buckets) {
+    out[model] = {
+      perGpuUsd: median(b.perGpuValues),
+      nftCount: b.samples.length,
+      samples: b.samples.slice(0, 5),  // for transparency / UI tooltip
+    };
+  }
+  return out;
+}
+
+// Estimate attested USD from the per-GPU NFT index. Returns null if no model
+// in the loan's hardware has any NFT samples.
+function estimateFromPerGpuIndex(hardware, perGpuIndex) {
+  if (!Array.isArray(hardware) || !perGpuIndex) return null;
+  let total = 0, anyHit = false;
+  for (const h of hardware) {
+    const key = (h.name || "").replace(/^NVIDIA\s+/i, "").replace(/\s*Blackwell\s*$/i, "").trim();
+    const entry = perGpuIndex[key];
+    if (entry?.perGpuUsd && h.count) {
+      total += entry.perGpuUsd * h.count;
+      anyHit = true;
+    }
+  }
+  return anyHit ? total : null;
+}
 
 async function fetchMetadata(tokenId) {
   try {
@@ -113,7 +206,7 @@ function aggregateLoanGroups(loans) {
       chain: l.chain,
       principal: 0,
       attestedUsd: 0,
-      attestedSourceMix: { nft: 0, "replacement-cost": 0 },
+      attestedSourceMix: { "nft-aggregate": 0, "nft-per-server": 0, "replacement-cost": 0 },
       hardware: new Map(),  // name → { name, count, vastGpuName, replacementCost, defaultLifeYears }
       loanCount: 0,
       documentIds: [],
@@ -139,15 +232,22 @@ function aggregateLoanGroups(loans) {
     }
     byKey.set(key, e);
   }
-  return [...byKey.values()].map(e => ({
-    ...e,
-    borrowers: [...e.borrowers],
-    borrower: [...e.borrowers][0] || null,
-    escrowedTypes: [...e.escrowedTypes],
-    tokenIds: [...e.tokenIds],
-    hardware: [...e.hardware.values()],
-    attestedSource: e.attestedSourceMix.nft > 0 ? "nft" : (e.attestedSourceMix["replacement-cost"] > 0 ? "replacement-cost" : null),
-  }))
+  return [...byKey.values()].map(e => {
+    // Priority: aggregate > per-server > replacement-cost (best provenance first).
+    let attestedSource = null;
+    if (e.attestedSourceMix["nft-aggregate"] > 0)   attestedSource = "nft-aggregate";
+    else if (e.attestedSourceMix["nft-per-server"] > 0) attestedSource = "nft-per-server";
+    else if (e.attestedSourceMix["replacement-cost"] > 0) attestedSource = "replacement-cost";
+    return {
+      ...e,
+      borrowers: [...e.borrowers],
+      borrower: [...e.borrowers][0] || null,
+      escrowedTypes: [...e.escrowedTypes],
+      tokenIds: [...e.tokenIds],
+      hardware: [...e.hardware.values()],
+      attestedSource,
+    };
+  })
   // Largest principal first (matches USDai UI ordering).
   .sort((a, b) => (b.principal || 0) - (a.principal || 0));
 }
@@ -298,47 +398,82 @@ export default async function handler(req, res) {
 
   const por_array = por || [];
 
-  // Fetch NFT metadata across known tokenId ranges; build a name → meta index.
-  // Names are normalized (strip "NVIDIA " prefix) on both sides so e.g.
-  //   metadata "NVIDIA H200 [75]"  ↔  loan "H200 [75]"
+  // Fetch all NFT metadata across known tokenId ranges. We use it two ways:
+  //   1. Aggregate roll-up join by exact loan name (1001+ range, e.g. "B200 [96]")
+  //   2. Per-GPU price index built from per-server NFTs (qty=1) — used as
+  //      attested fallback for loans without a 1001+ aggregate match.
   const metadataList = await safe(fetchAllMetadata(), "metadata", warnings) || [];
-  const nameToMeta = new Map();
+
+  // Build aggregate-roll-up index: ONLY NFTs with qty>1 join here. This stops
+  // small per-server NFTs (e.g. "Supermicro NVIDIA B300 Server" qty=1) from
+  // accidentally matching a loan that needs the full roll-up valuation.
+  const nameToAggregateMeta = new Map();
   for (const m of metadataList) {
     if (!m.name || m.collateralValueUsd == null) continue;
+    if (m.quantity == null || m.quantity <= 1) continue;
     const key = m.name.replace(/^NVIDIA\s+/i, "").trim();
-    const prev = nameToMeta.get(key);
-    // If multiple NFTs share a name, prefer the one with highest collateral value
-    // (the aggregate roll-up NFT vs per-server NFTs).
-    if (!prev || m.collateralValueUsd > prev.collateralValueUsd) nameToMeta.set(key, m);
+    const prev = nameToAggregateMeta.get(key);
+    if (!prev || m.collateralValueUsd > prev.collateralValueUsd) nameToAggregateMeta.set(key, m);
   }
+
+  // Per-GPU price index from per-server NFTs.
+  const perGpuIndex = buildPerGpuIndexFromNfts(metadataList);
 
   const tbills = por_array.filter(x => x.type === "TBILL").map(parseTbillRow);
   const loans = por_array.filter(x => x.type === "DEAL").map(parseLoanRow).map(loan => {
     const key = (loan.name || "").replace(/^NVIDIA\s+/i, "").trim();
-    const meta = nameToMeta.get(key);
-    // Enrich each hardware item with its GPU-map lookup. `vastProxy` is the
-    // gpu_name used as a stand-in for models without native Vast.ai listings.
+    const aggMeta = nameToAggregateMeta.get(key);
+    // Enrich each hardware item with its GPU-map lookup (Vast.ai proxy info)
+    // and attach the per-GPU NFT price for transparency.
     const hardware = loan.hardware.map(h => {
       const m = lookupGpu(h.name);
+      const gpuKey = (h.name || "").replace(/^NVIDIA\s+/i, "").replace(/\s*Blackwell\s*$/i, "").trim();
+      const idxEntry = perGpuIndex[gpuKey];
       return {
         name: h.name,
         count: h.count,
         percentage: h.percentage,
         vastGpuName: m?.vast ?? null,
         vastProxy: m?.vastProxy ?? null,
-        replacementCost: m?.replacementCost ?? null,
+        replacementCost: m?.replacementCost ?? null,  // last-resort fallback & DCF salvage anchor
         defaultLifeYears: m?.life ?? null,
+        // NFT-derived per-GPU price (from per-server NFTs). null when the
+        // model has no per-server NFT samples in the inventory.
+        perGpuUsdFromNft: idxEntry?.perGpuUsd ?? null,
+        nftSampleCount: idxEntry?.nftCount ?? 0,
       };
     });
-    const attestedUsd = meta?.collateralValueUsd ?? estimateFromReplacementCost(hardware);
+
+    // Layered attested-USD resolution:
+    //   1. Aggregate roll-up NFT by exact name (e.g. "B200 [96]") — best
+    //   2. Per-server NFT price × hardware count — derived from USDai's own NFTs
+    //   3. Replacement-cost guess (last resort, only when no NFT data exists)
+    let attestedUsd = null, attestedSource = null;
+    if (aggMeta) {
+      attestedUsd = aggMeta.collateralValueUsd;
+      attestedSource = "nft-aggregate";
+    } else {
+      const v = estimateFromPerGpuIndex(hardware, perGpuIndex);
+      if (v != null) {
+        attestedUsd = v;
+        attestedSource = "nft-per-server";
+      } else {
+        const v2 = estimateFromReplacementCost(hardware);
+        if (v2 != null) {
+          attestedUsd = v2;
+          attestedSource = "replacement-cost";
+        }
+      }
+    }
+
     return {
       ...loan,
       hardware,
-      tokenId: meta?.tokenId ?? null,
+      tokenId: aggMeta?.tokenId ?? null,
       attestedUsd,
-      attestedSource: meta ? "nft" : (attestedUsd != null ? "replacement-cost" : null),
-      attestedUsefulLifeDays: meta?.usefulLifeDays ?? null,
-      manufacturer: meta?.manufacturer ?? null,
+      attestedSource,
+      attestedUsefulLifeDays: aggMeta?.usefulLifeDays ?? null,
+      manufacturer: aggMeta?.manufacturer ?? null,
     };
   });
 
@@ -392,6 +527,7 @@ export default async function handler(req, res) {
     loanGroups,
     tbills,
     gpuRentals,
+    perGpuIndex,  // NFT-derived per-GPU price index for transparency
     warnings,
   });
 }

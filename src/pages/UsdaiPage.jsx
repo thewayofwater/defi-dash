@@ -121,11 +121,19 @@ function LoansTable({ groups, selectedKey, onSelect, accent }) {
                           <div><span style={dim}>Off-take:</span> {g.offTake || "—"}</div>
                           <div>
                             <span style={dim}>
-                              {g.attestedSource === "nft" ? "USDai-attested $:" : "Replacement-cost est:"}
+                              {g.attestedSource === "nft-aggregate" ? "Attested $ (aggregate NFT):"
+                                : g.attestedSource === "nft-per-server" ? "Attested $ (per-server NFTs):"
+                                : g.attestedSource === "replacement-cost" ? "Replacement-cost est:"
+                                : "Attested $:"}
                             </span> {fmtUsdShort(g.attestedUsd)}
+                            {g.attestedSource === "nft-per-server" && (
+                              <span style={{ ...dim, fontSize: 9, marginLeft: 4 }} title="Sum of (hardware count × USDai per-server NFT median price). Excludes networking/infrastructure that aggregate NFTs include.">
+                                (hardware only)
+                              </span>
+                            )}
                             {g.attestedSource === "replacement-cost" && (
-                              <span style={{ ...dim, fontSize: 9, marginLeft: 4 }} title="No matching NFT — fallback estimate using public NVIDIA list prices × GPU count">
-                                (not from NFT)
+                              <span style={{ ...dim, fontSize: 9, marginLeft: 4 }} title="No NFT data available — fallback estimate using public NVIDIA list prices × GPU count">
+                                (no NFT data)
                               </span>
                             )}
                           </div>
@@ -371,7 +379,7 @@ export default function UsdaiPage() {
         <ModuleCard>
           <SectionHeader
             title="GPU Collateral Cross-Check"
-            subtitle="Per-unit collateral $ vs DCF-implied $/unit from live Vast.ai rentals. Attested $ is sourced from metadata.usd.ai NFTs when a loan name matches; otherwise it falls back to a public-list replacement-cost estimate (labeled in detail panel)." />
+            subtitle="Per-unit attested collateral $ (USDai's metadata.usd.ai per-server NFT median) vs DCF-implied $/unit from live Vast.ai rentals." />
 
           <div style={{ marginBottom: 14 }}>
             <button onClick={() => setAssumptionsOpen(o => !o)}
