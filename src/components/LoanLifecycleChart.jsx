@@ -15,12 +15,18 @@ const mono = "'JetBrains Mono', monospace";
  *   LTV(t) = principal(t) / collateral(t)
  *
  * USDai's docs state "three years, straight-line amortizing" and quote that
- * an 80% origination LTV "deleverages to approximately 65% LTV by end of
- * year one as principal pays down faster than collateral value declines."
- * Back-solving that example pins the depreciation rate at ~18%/year linear
- * (equivalent to a ~5.5-year physical useful life, or a ~46% residual at the
- * 3-year term mark). The NFT's `Useful Life (days): 1080` appears to be the
- * loan amortization period, not the GPU's physical depreciation lifetime.
+ * an 80% origination LTV "deleverages to approximately 65% LTV by year one."
+ * Default depreciation rate is 20%/year linear — the modal industry
+ * standard for AI servers (5-year useful life, aligns with major cloud
+ * providers' accounting and IRS MACRS computer-equipment class). Under this
+ * rate, an 80% loan deleverages to ~67% by year 1, within USDai's
+ * "approximately 65%" example.
+ *
+ * The model treats the entire collateral bundle (GPU servers + networking +
+ * infrastructure NFTs) as a single asset depreciating uniformly. This is a
+ * simplification — networking and infrastructure typically depreciate
+ * slower (7-10yr life) than GPUs themselves — but most bundles are
+ * GPU-dominant (>90% of cv) so blended impact is small.
  *
  * Y-axis carries two ratios on the same scale (matching USDai's reference):
  *   - GPU collateral line: % of original collateral (depreciation)
@@ -30,7 +36,7 @@ const mono = "'JetBrains Mono', monospace";
  */
 export default function LoanLifecycleChart({
   originationDate, maturityDate, originalPrincipal, originalCollateral,
-  depreciationRatePerYear = 0.18,   // back-solved from USDai's published example
+  depreciationRatePerYear = 0.20,   // industry standard: 5-year useful life
   accent = "#c8b88a",
 }) {
   if (!originationDate || !maturityDate || !originalPrincipal || !originalCollateral) {
@@ -140,8 +146,8 @@ export default function LoanLifecycleChart({
         </div>
       </div>
       <div style={{ fontSize: 9, color: "#4f5e6f", fontFamily: mono, marginBottom: 4 }}>
-        Model: straight-line amortization to 0% over loan term; linear GPU depreciation at {Math.round(depreciationRatePerYear * 100)}%/year
-        (back-solved from USDai's documented 80%→65% year-1 deleverage example).
+        Model: straight-line amortization to 0% over loan term; linear bundle depreciation at {Math.round(depreciationRatePerYear * 100)}%/year
+        (5-year useful life, industry standard for AI servers).
       </div>
       <div style={{ width: "100%", height: 210 }}>
         <ResponsiveContainer>
