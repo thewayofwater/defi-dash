@@ -124,6 +124,7 @@ function LoansTable({ groups, selectedKey, onSelect, accent }) {
                             <span style={dim}>
                               {g.attestedSource === "nft-aggregate" ? "Attested $ (aggregate NFT):"
                                 : g.attestedSource === "nft-bundle" ? "Attested $ (bundle NFTs):"
+                                : g.attestedSource === "nft-direct" ? "Attested $ (direct NFTs):"
                                 : g.attestedSource === "nft-per-server" ? "Attested $ (per-server NFTs):"
                                 : g.attestedSource === "replacement-cost" ? "Replacement-cost est:"
                                 : "Attested $:"}

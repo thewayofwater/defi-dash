@@ -303,6 +303,53 @@ async function getAggregateOrigination(tokenId) {
   }
 }
 
+// Pattern C: find per-server NFTs that aren't in a bundle (i.e. held directly
+// by the LoanRouter or some other USDai-controlled position contract). These
+// back loans like RTX 5090 [15] whose original bundle was unwrapped and the
+// underlying NFTs transferred to the LoanRouter individually.
+//
+// Returns:  { tokenId, name, collateralValueUsd, ownerAddr, model }[]
+async function findDirectlyHeldNfts(metadataList, bundleTokenIdSet) {
+  // Only per-server NFTs (qty=1) can be Pattern C. Aggregate roll-ups (qty>1)
+  // are Pattern A and don't need this lookup. NFTs already in an active bundle
+  // are Pattern B — exclude them.
+  const candidates = (metadataList || []).filter(m =>
+    m && m.tokenId && m.quantity === 1 && !bundleTokenIdSet.has(m.tokenId)
+  );
+  const CONCURRENCY = 8;
+  const directlyHeld = [];
+  for (let i = 0; i < candidates.length; i += CONCURRENCY) {
+    const batch = candidates.slice(i, i + CONCURRENCY);
+    const results = await Promise.all(batch.map(async (m) => {
+      try {
+        const hex = m.tokenId.toString(16).padStart(64, "0");
+        const owner = await rpcCall("eth_call", [{
+          to: HARDWARE_NFT,
+          data: "0x6352211e" + hex,
+        }, "latest"], 8000);
+        if (!owner || owner === "0x") return null;
+        const ownerAddr = ("0x" + owner.slice(-40)).toLowerCase();
+        // Skip if held by the wrapper (those should have been in bundleTokenIdSet
+        // — defensive double-check)
+        if (ownerAddr === BUNDLE_WRAPPER.toLowerCase()) return null;
+        // Skip 0x0 (burned) and the original deployer/mint sources
+        if (ownerAddr === "0x0000000000000000000000000000000000000000") return null;
+        const model = extractGpuFromNftName(m.name);
+        return {
+          tokenId: m.tokenId,
+          name: m.name,
+          collateralValueUsd: m.collateralValueUsd,
+          ownerAddr,
+          model,
+          isLoanRouter: ownerAddr === LOAN_ROUTER.toLowerCase(),
+        };
+      } catch { return null; }
+    }));
+    directlyHeld.push(...results.filter(Boolean));
+  }
+  return directlyHeld;
+}
+
 // Given an array of BundleMinted events, check current owner of each bundle
 // and return only those still held by the LoanRouter (i.e. active collateral).
 async function filterActiveBundles(events) {
@@ -399,11 +446,42 @@ async function buildBundleIndex(metadataById, warnings) {
       if (ts) aggregateOrigination.set(tid, ts);
     }));
 
-    _bundleCache = { ts: Date.now(), bundles, byBorrower, aggregateOrigination };
-    return _bundleCache;
+    // Pattern C: per-server NFTs held directly by the LoanRouter (or other USDai
+    // position contracts) — these back loans like RTX 5090 [15] whose original
+    // bundle was unwrapped.
+    const bundleTokenIdSet = new Set();
+    for (const b of bundles) for (const tid of b.tokenIds) bundleTokenIdSet.add(tid);
+    const directlyHeldNfts = await findDirectlyHeldNfts([...metadataById.values()], bundleTokenIdSet) || [];
+
+    // Group Pattern C NFTs by GPU model so we can match to loans by hardware spec.
+    const patternCByModel = new Map();
+    for (const nft of directlyHeldNfts) {
+      if (!nft.model || !nft.collateralValueUsd) continue;
+      if (!patternCByModel.has(nft.model)) patternCByModel.set(nft.model, []);
+      patternCByModel.get(nft.model).push(nft);
+    }
+
+    // Resolve origination dates for each unique Pattern C tokenId (first
+    // Transfer event for the NFT — typically the mint timestamp).
+    const directlyHeldOrigination = new Map(); // tokenId -> ms
+    await Promise.all(directlyHeldNfts.map(async (nft) => {
+      const ts = await getAggregateOrigination(nft.tokenId);
+      if (ts) directlyHeldOrigination.set(nft.tokenId, ts);
+    }));
+
+    // If any bundle came back with totalCv=0 (metadata-fetch failure mid-build),
+    // don't cache so the next refresh retries. Otherwise cache for the TTL.
+    const hasBrokenBundle = bundles.some(b => b.totalCv === 0 && b.tokenIds.length > 0);
+    const result = {
+      ts: Date.now(),
+      bundles, byBorrower, aggregateOrigination,
+      patternCByModel, directlyHeldOrigination,
+    };
+    if (!hasBrokenBundle) _bundleCache = result;
+    return result;
   } catch (e) {
     if (warnings) warnings.push(`bundleIndex: ${e.message}`);
-    return { ts: Date.now(), bundles: [], byBorrower: new Map() };
+    return { ts: Date.now(), bundles: [], byBorrower: new Map(), aggregateOrigination: new Map(), patternCByModel: new Map(), directlyHeldOrigination: new Map() };
   }
 }
 
@@ -489,7 +567,7 @@ function aggregateLoanGroups(loans, bundleCvById = new Map()) {
       attestedUsefulLifeDays: l.attestedUsefulLifeDays || 1080,
       originationDate: l.originationDate || null,
       maturityDate: l.maturityDate || null,
-      attestedSourceMix: { "nft-aggregate": 0, "nft-bundle": 0, "nft-per-server": 0, "replacement-cost": 0 },
+      attestedSourceMix: { "nft-aggregate": 0, "nft-bundle": 0, "nft-direct": 0, "nft-per-server": 0, "replacement-cost": 0 },
       hardware: new Map(),  // name → { name, count, vastGpuName, replacementCost, defaultLifeYears }
       loanCount: 0,
       documentIds: [],
@@ -521,6 +599,15 @@ function aggregateLoanGroups(loans, bundleCvById = new Map()) {
           credit = bundleCvById.get(l.bundleId);
           e._countedBundleIds.add(l.bundleId);
         }
+      } else if (l.attestedSource === "nft-direct" && Array.isArray(l.bundleNfts)) {
+        // Sum cv of each not-yet-counted tokenId
+        for (const n of l.bundleNfts) {
+          if (n?.tokenId == null) continue;
+          if (!e._countedTokenIds.has(n.tokenId)) {
+            credit += (n.cv || 0);
+            e._countedTokenIds.add(n.tokenId);
+          }
+        }
       } else if (l.tokenId != null) {
         if (!e._countedTokenIds.has(l.tokenId)) {
           credit = l.attestedUsd;
@@ -544,8 +631,9 @@ function aggregateLoanGroups(loans, bundleCvById = new Map()) {
   return [...byKey.values()].map(e => {
     // Priority: aggregate > per-server > replacement-cost (best provenance first).
     let attestedSource = null;
-    if (e.attestedSourceMix["nft-aggregate"] > 0)   attestedSource = "nft-aggregate";
+    if (e.attestedSourceMix["nft-aggregate"] > 0)       attestedSource = "nft-aggregate";
     else if (e.attestedSourceMix["nft-bundle"] > 0)     attestedSource = "nft-bundle";
+    else if (e.attestedSourceMix["nft-direct"] > 0)     attestedSource = "nft-direct";
     else if (e.attestedSourceMix["nft-per-server"] > 0) attestedSource = "nft-per-server";
     else if (e.attestedSourceMix["replacement-cost"] > 0) attestedSource = "replacement-cost";
     const { _countedBundleIds, _countedTokenIds, ...rest } = e;
@@ -739,6 +827,52 @@ export default async function handler(req, res) {
   // Build the bundle index from on-chain events. Cached at module level.
   const bundleIndex = await buildBundleIndex(metadataById, warnings);
 
+  // ── Pattern C: assign directly-held NFTs to loans by hardware spec ─────────
+  // For loans not covered by an aggregate NFT or an active bundle, allocate
+  // directly-held per-server NFTs (Pattern C) by matching GPU model + count.
+  // Each NFT can be assigned to at most one loan.
+  const patternCAssignment = new Map(); // documentId -> [nft, ...]
+  const patternCOriginationByDoc = new Map(); // documentId -> earliest ms
+  {
+    // Make a working copy of the byModel pools so we can pop NFTs as they're assigned
+    const pools = new Map();
+    for (const [model, nfts] of (bundleIndex.patternCByModel || new Map())) {
+      pools.set(model, nfts.slice());
+    }
+    // Sort loans by stage (deployed first) then by principal (largest first)
+    const sortedRawDeals = rawDeals.slice().sort((a, b) => {
+      if (a.isDeployed !== b.isDeployed) return a.isDeployed ? -1 : 1;
+      return (b.principal || 0) - (a.principal || 0);
+    });
+    for (const loan of sortedRawDeals) {
+      // Skip if already covered by an aggregate NFT or a bundle
+      const loanNameKey = (loan.name || "").replace(/^NVIDIA\s+/i, "").trim();
+      if (nameToAggregateMeta.has(loanNameKey)) continue;
+      // (we'll know later if a bundle was assigned, but Pattern C is a fallback —
+      // try anyway and let later logic prefer bundle if both exist)
+      const assignedNfts = [];
+      let earliestOrigination = null;
+      for (const h of loan.hardware) {
+        const k = (h.name || "").replace(/^NVIDIA\s+/i, "").replace(/\s*Blackwell\s*$/i, "").trim();
+        const model = extractGpuFromNftName(k) || k;
+        const pool = pools.get(model);
+        if (!pool || !pool.length) continue;
+        const taken = pool.splice(0, h.count || 0);
+        assignedNfts.push(...taken);
+        for (const nft of taken) {
+          const ts = bundleIndex.directlyHeldOrigination?.get(nft.tokenId);
+          if (ts && (earliestOrigination == null || ts < earliestOrigination)) {
+            earliestOrigination = ts;
+          }
+        }
+      }
+      if (assignedNfts.length > 0) {
+        patternCAssignment.set(loan.documentId, assignedNfts);
+        if (earliestOrigination) patternCOriginationByDoc.set(loan.documentId, earliestOrigination);
+      }
+    }
+  }
+
   // ── Per-borrower greedy bundle assignment ──────────────────────────────────
   // For each borrower, distribute their active bundles 1:1 across their raw
   // loans. A bundle is preferentially assigned to the loan whose hardware
@@ -817,12 +951,39 @@ export default async function handler(req, res) {
       // Use the per-borrower bundle assignment computed above (each bundle
       // assigned to exactly one raw loan).
       const assignedBundle = loanBundleAssignment.get(loan.documentId);
-      if (assignedBundle) {
+      // Treat a bundle as invalid if its totalCv is 0 (metadata-fetch race on
+      // cold start can produce empty bundles even though the on-chain bundle
+      // was matched). Fall through to per-server estimation in that case.
+      if (assignedBundle && assignedBundle.totalCv > 0) {
         attestedUsd = assignedBundle.totalCv;
         attestedSource = "nft-bundle";
         matchedBundleId = assignedBundle.bundleId;
         matchedBundleNfts = assignedBundle.memberNfts;
         originationDate = assignedBundle.originationDate;
+      } else if (assignedBundle) {
+        // Bundle was matched but metadata was incomplete — keep the origination
+        // date (still useful for the lifecycle chart) but use per-server fallback for cv.
+        originationDate = assignedBundle.originationDate;
+      }
+
+      // Pattern C fallback: directly-held NFTs (e.g. RTX 5090 [15])
+      if (attestedUsd == null) {
+        const patternCNfts = patternCAssignment.get(loan.documentId);
+        if (patternCNfts && patternCNfts.length > 0) {
+          const totalCv = patternCNfts.reduce((s, n) => s + (n.collateralValueUsd || 0), 0);
+          if (totalCv > 0) {
+            attestedUsd = totalCv;
+            attestedSource = "nft-direct";
+            matchedBundleNfts = patternCNfts.map(n => ({
+              tokenId: n.tokenId,
+              name: n.name,
+              cv: n.collateralValueUsd,
+            }));
+            if (originationDate == null) {
+              originationDate = patternCOriginationByDoc.get(loan.documentId) ?? null;
+            }
+          }
+        }
       }
 
       if (attestedUsd == null) {
