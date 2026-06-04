@@ -31,6 +31,71 @@ async function fetchEvmSupply(rpc, contract, decimals) {
   return parseInt(data.result, 16) / 10 ** decimals;
 }
 
+// ─── wbtc.network v2: mint / burn orders ───
+// The old per-chain orders endpoints were retired; the transparency page now
+// uses a single paginated v2 POST endpoint (pageSize capped at 200 server-side).
+// We page through the full set so the All-Time supply history + ATH go back to
+// WBTC's 2019 launch, not just the most recent window. Each order carries its
+// `network` (eth/base/kava/sol/trx/osmo), mapped to `sourceChain` for the
+// existing order-processing logic.
+const ORDERS_PAGE_SIZE = 200;
+const ORDERS_MAX_PAGES = 20; // safety cap (~4000 orders); real total is ~1.4k
+
+async function fetchOrdersPage(pageIndex) {
+  const r = await fetch(
+    `https://wbtc.network/api/v2/orders?pageIndex=${pageIndex}&pageSize=${ORDERS_PAGE_SIZE}`,
+    {
+      method: "POST",
+      headers: { "User-Agent": "DeFiDash/1.0", Accept: "application/json", "Content-Type": "application/json" },
+      body: "{}",
+      signal: AbortSignal.timeout(15000),
+    }
+  );
+  if (!r.ok) throw new Error(`orders v2 p${pageIndex} ${r.status}`);
+  const j = await r.json();
+  return { rows: Array.isArray(j?.data) ? j.data : [], total: j?.total ?? null };
+}
+
+async function fetchOrdersV2() {
+  // Fetch page 1 to learn the total, then pull the rest in parallel.
+  const first = await fetchOrdersPage(1);
+  const all = [...first.rows];
+  const total = first.total ?? first.rows.length;
+  const pages = Math.min(ORDERS_MAX_PAGES, Math.ceil(total / ORDERS_PAGE_SIZE));
+  if (pages > 1) {
+    const rest = await Promise.all(
+      Array.from({ length: pages - 1 }, (_, i) => fetchOrdersPage(i + 2).then((p) => p.rows).catch(() => []))
+    );
+    for (const rows of rest) all.push(...rows);
+  }
+  return all.map((o) => ({ ...o, sourceChain: o.network }));
+}
+
+// ─── wbtc.network v2: custodial BTC addresses ───
+// The old per-chain address endpoints (/api/chain/<c>/token/wbtc/addresses)
+// were retired in 2026 and now 404. The transparency page moved to a single
+// paginated v2 endpoint. Unlike the HTML pages, this API route is NOT behind
+// the Cloudflare Turnstile challenge, so it's reachable server-side.
+async function fetchCustodialAddressesV2() {
+  // total is ~109; pageSize is capped at 200 server-side, so one page covers it.
+  const r = await fetch(
+    "https://wbtc.network/api/v2/custodialAddresses?pageIndex=1&pageSize=200",
+    { headers: { "User-Agent": "DeFiDash/1.0", Accept: "application/json" }, signal: AbortSignal.timeout(15000) }
+  );
+  if (!r.ok) throw new Error(`custodialAddresses v2 ${r.status}`);
+  const j = await r.json();
+  const rows = Array.isArray(j?.data) ? j.data : [];
+  return rows
+    .filter((a) => a.chain === "btc" && a.address)
+    .map((a) => ({
+      address: a.address,
+      balance: parseInt(a.balance || 0) / 1e8,   // sats → BTC
+      type: a.type || "custodial",
+      merchant: a.merchant || null,
+      source: a.source || null,
+    }));
+}
+
 // ─── EVM: recent Transfer events (mint = from=0x0, burn = to=0x0) ───
 
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
@@ -148,7 +213,7 @@ async function fetchCosmosSupply(rpc, denom, decimals) {
 // Walks forward from 0 at the first mint date, applying each day's net delta to
 // reconstruct cumulative supply over time. Source of truth = wbtc.network orders.
 
-function deriveHistoricalSupply(orderEvents) {
+function deriveHistoricalSupply(orderEvents, currentSupply = null) {
   const events = (orderEvents || [])
     .filter((o) => o.date && o.amount > 0 && (o.type === "mint" || o.type === "burn"))
     .map((o) => ({
@@ -169,8 +234,11 @@ function deriveHistoricalSupply(orderEvents) {
   }
   const days = [...buckets.keys()].sort((a, b) => a - b);
 
-  // Walk forward from 0 day-by-day, applying each day's net delta (or 0 on quiet days)
-  // so the series has a point for every calendar day between the first activity and today.
+  // Walk forward day-by-day accumulating net deltas. We only have a recent
+  // window of orders (not the full history back to 2019), so a naive cumulative
+  // from 0 would be wrong. Instead we anchor the END of the series to the real
+  // current supply and shift the whole curve by that offset — reconstructing
+  // the correct supply level across the window we do have.
   const series = [];
   let s = 0;
   const firstDay = days[0];
@@ -178,6 +246,11 @@ function deriveHistoricalSupply(orderEvents) {
   for (let day = firstDay; day <= todayDay; day += DAY_MS) {
     if (buckets.has(day)) s += buckets.get(day);
     series.push({ date: Math.floor(day / 1000), value: s });
+  }
+  // Offset so the final point equals the known current supply.
+  if (currentSupply != null && series.length) {
+    const offset = currentSupply - series[series.length - 1].value;
+    for (const pt of series) pt.value += offset;
   }
   return series;
 }
@@ -275,13 +348,18 @@ export default async function handler(req, res) {
   res.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=60");
 
   try {
-    const [chainSupplies, wbtcNetworkData] = await Promise.all([
+    const [chainSupplies, custodialAddrs, ordersV2] = await Promise.all([
       fetchAllChainSupplies(),
-      fetchWbtcNetworkData().catch((err) => {
-        console.error("wbtc.network fetch error:", err.message);
-        return { summary: null, addresses: [], orders: [] };
+      fetchCustodialAddressesV2().catch((err) => {
+        console.error("custodialAddresses v2 fetch error:", err.message);
+        return [];
+      }),
+      fetchOrdersV2().catch((err) => {
+        console.error("orders v2 fetch error:", err.message);
+        return [];
       }),
     ]);
+    const wbtcNetworkData = { summary: null, addresses: [], orders: ordersV2 };
 
     // Compute totals
     const totalSupply = chainSupplies.reduce((s, c) => s + (c.supply || 0), 0);
@@ -290,12 +368,11 @@ export default async function handler(req, res) {
     const wbtcSupply = wbtcNetworkData.summary?.supply ? parseInt(wbtcNetworkData.summary.supply) / 1e8 : null;
     const wbtcHoldings = wbtcNetworkData.summary?.holdings ? parseInt(wbtcNetworkData.summary.holdings) / 1e8 : null;
 
-    // Separate BTC custodian addresses from chain contracts. Balances come
-    // from wbtc.network's reported values for dashboard speed; on-chain
-    // verification of these balances is available via scripts/verify-reserves.js
-    // (can be run manually or on a weekly/monthly cron).
-    const btcAddresses = wbtcNetworkData.addresses.filter((a) => a.chain === "btc");
-    const totalBtcReserves = btcAddresses.reduce((s, a) => s + (parseInt(a.balance || 0) / 1e8), 0);
+    // Per-address custodian breakdown comes from the v2 endpoint (custodialAddrs,
+    // already filtered to btc + balance in BTC). Total reserves = sum of all
+    // custodial address balances.
+    const btcAddresses = custodialAddrs;
+    const totalBtcReserves = btcAddresses.reduce((s, a) => s + (a.balance || 0), 0);
 
     // Parse orders into clean mint/burn events with real amounts and merchant names
     // Orders come tagged with sourceChain (eth, base, kava)
@@ -368,7 +445,7 @@ export default async function handler(req, res) {
     // completed mint/burn order across all chains. Each chain's orders represent real
     // BTC-collateralized issuance (custody flows), not bridge transfers — bridge events
     // happen on-chain via LayerZero and aren't in this feed, so there's no double-counting.
-    const historicalSupply = deriveHistoricalSupply(orderEvents);
+    const historicalSupply = deriveHistoricalSupply(orderEvents, totalSupply);
 
     return res.status(200).json({
       summary: {
@@ -381,9 +458,10 @@ export default async function handler(req, res) {
       chainSupplies,
       custodianAddresses: btcAddresses.map((a) => ({
         address: a.address,
-        balance: parseInt(a.balance || 0) / 1e8,
+        balance: a.balance,           // already in BTC
         type: a.type,
-        verified: a.verified,
+        merchant: a.merchant,
+        source: a.source,
       })).sort((a, b) => b.balance - a.balance),
       recentEvents: orderEvents,
       historicalSupply,

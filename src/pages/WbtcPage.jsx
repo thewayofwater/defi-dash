@@ -147,24 +147,15 @@ function SupplyByChainChart({ chainSupplies }) {
 
 function CustodianTable({ addresses }) {
   const [page, setPage] = useState(0);
-  const [typeFilter, setTypeFilter] = useState("all");
-  const [hideZero, setHideZero] = useState(false);
   const [sortKey, setSortKey] = useState("balance");
   const [sortDir, setSortDir] = useState("desc");
   const PAGE_SIZE = 10;
 
-  const types = useMemo(() => {
-    return Array.from(new Set(addresses.map((a) => a.type).filter(Boolean))).sort();
-  }, [addresses]);
-
   const sorted = useMemo(() => {
-    let list = addresses;
-    if (typeFilter !== "all") list = list.filter((a) => a.type === typeFilter);
-    if (hideZero) list = list.filter((a) => a.balance > 0);
-    return [...list].sort((a, b) => {
+    return [...addresses].sort((a, b) => {
       let av = a[sortKey];
       let bv = b[sortKey];
-      if (sortKey === "address" || sortKey === "type") {
+      if (sortKey === "address") {
         av = (av || "").toString();
         bv = (bv || "").toString();
         return sortDir === "desc" ? bv.localeCompare(av) : av.localeCompare(bv);
@@ -173,7 +164,7 @@ function CustodianTable({ addresses }) {
       bv = bv || 0;
       return sortDir === "desc" ? bv - av : av - bv;
     });
-  }, [addresses, typeFilter, hideZero, sortKey, sortDir]);
+  }, [addresses, sortKey, sortDir]);
 
   const toggleSort = (key) => {
     if (sortKey === key) setSortDir(sortDir === "desc" ? "asc" : "desc");
@@ -185,29 +176,22 @@ function CustodianTable({ addresses }) {
   const totalPages = Math.ceil(sorted.length / PAGE_SIZE);
   const paged = sorted.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   const nonZeroCount = addresses.filter((a) => a.balance > 0).length;
+  const totalBtc = addresses.reduce((s, a) => s + (a.balance || 0), 0);
 
   if (!addresses.length) return <div style={{ color: "#6b7a8d", fontSize: 13, fontFamily: mono, padding: 16 }}>No custodian addresses</div>;
 
   return (
     <div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
-        <span style={{ fontSize: 10, color: "#6b7a8d", fontFamily: mono, letterSpacing: 0.5 }}>Type</span>
-        <select value={typeFilter} onChange={(e) => { setTypeFilter(e.target.value); setPage(0); }} style={FILTER_STYLE}>
-          <option value="all">All</option>
-          {types.map((t) => <option key={t} value={t}>{t}</option>)}
-        </select>
-        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 10, color: "#6b7a8d", fontFamily: mono }}>
-          <input type="checkbox" checked={hideZero} onChange={(e) => { setHideZero(e.target.checked); setPage(0); }} style={{ accentColor: ACCENT }} />
-          Hide zero balances
-        </label>
-        <span style={{ fontSize: 10, color: "#6b7a8d", fontFamily: mono }}>{sorted.length} of {addresses.length} · {nonZeroCount} active</span>
+      <div style={{ display: "flex", gap: 12, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ fontSize: 10, color: "#6b7a8d", fontFamily: mono }}>
+          {addresses.length} addresses · {nonZeroCount} active · {totalBtc.toLocaleString(undefined, { maximumFractionDigits: 2 })} BTC total
+        </span>
       </div>
       <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr>
               <th style={{ ...TH, cursor: "pointer" }} onClick={() => toggleSort("address")}>Address{sortIcon("address")}</th>
-              <th style={{ ...TH, cursor: "pointer" }} onClick={() => toggleSort("type")}>Type{sortIcon("type")}</th>
               <th style={{ ...TH, textAlign: "right", cursor: "pointer" }} onClick={() => toggleSort("balance")}>Balance (BTC){sortIcon("balance")}</th>
             </tr>
           </thead>
@@ -223,7 +207,6 @@ function CustodianTable({ addresses }) {
                   onMouseLeave={(e) => e.currentTarget.style.background = i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.008)"}
                 >
                   <td style={{ ...TD, color: "#cbd5e1", wordBreak: "break-all" }}>{a.address}</td>
-                  <td style={TD_DIM}>{a.type}</td>
                   <td style={{ ...TD_NUM, color: isZero ? "#4a5568" : ACCENT }}>{(a.balance || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
                 </tr>
               );
