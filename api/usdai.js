@@ -1,4 +1,4 @@
-import { lookupGpu, normalizeHardwareName, distinctVastNames } from "../src/utils/usdai-gpu-map.js";
+import { lookupGpu, normalizeHardwareName, distinctVastNames, distinctOrnNames } from "../src/utils/usdai-gpu-map.js";
 
 const USDAI = "https://api.usd.ai/usdai";
 const LLAMA = "https://api.llama.fi/protocol/usd-ai";
@@ -83,6 +83,45 @@ function inferGpusPerNft(name) {
   return 1;
 }
 
+// ── Composition signatures for robust loan ↔ aggregate-NFT matching ─────────
+// USDai sometimes edits a loan's display name (e.g. "H200 [6]") without updating
+// the matching aggregate NFT ("...H200 [10]"). Matching by exact name string is
+// therefore brittle. Instead we match on a canonical GPU-composition signature.
+
+// Parse a roll-up name like "NVIDIA B200 [38] / H200 [10]" → [{model:"B200",count:38},{model:"H200",count:10}]
+function parseNameToComposition(name) {
+  if (!name) return [];
+  const out = [];
+  // Split on "/" for multi-GPU bundles, parse each "<model> [N]" segment.
+  for (const seg of name.replace(/^NVIDIA\s+/i, "").split("/")) {
+    const m = seg.match(/^\s*(.+?)\s*\[(\d+)\]/);
+    if (m) {
+      const model = extractGpuFromNftName(m[1]) || m[1].trim();
+      out.push({ model, count: parseInt(m[2], 10) });
+    }
+  }
+  return out;
+}
+
+// Canonical full-composition signature, e.g. "B200:38|H200:10" (sorted by model).
+function compositionSig(items) {
+  const norm = (items || [])
+    .map(i => ({ model: extractGpuFromNftName(i.model || i.name) || (i.model || i.name || "").trim(), count: i.count || 0 }))
+    .filter(i => i.model && i.count > 0)
+    .sort((a, b) => a.model.localeCompare(b.model));
+  return norm.map(i => `${i.model}:${i.count}`).join("|");
+}
+
+// Dominant-GPU signature, e.g. "B200:38" (the highest-count model). Robust to
+// display typos in a SECONDARY GPU's count while still uniquely identifying a loan.
+function dominantSig(items) {
+  const norm = (items || [])
+    .map(i => ({ model: extractGpuFromNftName(i.model || i.name) || (i.model || i.name || "").trim(), count: i.count || 0 }))
+    .filter(i => i.model && i.count > 0)
+    .sort((a, b) => b.count - a.count);
+  return norm.length ? `${norm[0].model}:${norm[0].count}` : "";
+}
+
 function median(arr) {
   const a = arr.filter(x => Number.isFinite(x) && x > 0).sort((x, y) => x - y);
   if (!a.length) return null;
@@ -90,28 +129,35 @@ function median(arr) {
   return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
 }
 
-// From all fetched NFTs, build a per-GPU-model price index using per-server
-// NFTs (qty=1). Aggregate roll-up NFTs (qty>1) are excluded from this index
-// because their cv includes network fabric / infra that doesn't scale 1:1
-// with GPU count.
+// From all fetched NFTs, build a per-COLLATERAL-UNIT price index from per-server
+// NFTs (qty=1). One per-server NFT = one collateral unit (a server/chassis), and
+// a loan's hardware[].count (the "[N]" in its name) is in those SAME units — e.g.
+// "B200 [16]" is 16 server units, not 16 individual GPUs. So the index value is the
+// median per-NFT collateral value, and estimateFromPerUnitIndex() multiplies it by
+// `count` directly.
+//
+// NOTE: this previously divided each NFT's cv by its inferred GPU count (an
+// "8-GPU Server" → /8), producing a per-GPU price. Multiplying that by a loan's
+// unit-count silently under-valued any loan whose backing servers' names encode a
+// GPU count (B200/H200) by ~8×, yielding absurd LTVs (e.g. B200 [16] @ 753%).
+// Aggregate roll-up NFTs (quantity>1) stay excluded — their cv bundles extra
+// network fabric / infra that doesn't scale 1:1 per unit.
 function buildPerGpuIndexFromNfts(metadataList) {
-  const buckets = new Map(); // model → { perGpuValues: [], samples: [] }
+  const buckets = new Map(); // model → { perUnitValues: [], samples: [] }
   for (const m of metadataList) {
     if (!m || m.collateralValueUsd == null) continue;
     if (m.quantity != null && m.quantity > 1) continue; // skip aggregate roll-ups
     const model = extractGpuFromNftName(m.name);
     if (!model) continue;
-    const gpusPerBundle = inferGpusPerNft(m.name);
-    const perGpu = m.collateralValueUsd / Math.max(1, gpusPerBundle);
-    const b = buckets.get(model) || { perGpuValues: [], samples: [] };
-    b.perGpuValues.push(perGpu);
-    b.samples.push({ tokenId: m.tokenId, name: m.name, cv: m.collateralValueUsd, gpusPerBundle });
+    const b = buckets.get(model) || { perUnitValues: [], samples: [] };
+    b.perUnitValues.push(m.collateralValueUsd);  // per server-unit (matches loan `count`)
+    b.samples.push({ tokenId: m.tokenId, name: m.name, cv: m.collateralValueUsd, gpusPerNft: inferGpusPerNft(m.name) });
     buckets.set(model, b);
   }
   const out = {};
   for (const [model, b] of buckets) {
     out[model] = {
-      perGpuUsd: median(b.perGpuValues),
+      perUnitUsd: median(b.perUnitValues),
       nftCount: b.samples.length,
       samples: b.samples.slice(0, 5),  // for transparency / UI tooltip
     };
@@ -121,14 +167,16 @@ function buildPerGpuIndexFromNfts(metadataList) {
 
 // Estimate attested USD from the per-GPU NFT index. Returns null if no model
 // in the loan's hardware has any NFT samples.
-function estimateFromPerGpuIndex(hardware, perGpuIndex) {
-  if (!Array.isArray(hardware) || !perGpuIndex) return null;
+// Estimate a loan's attested collateral as Σ (units of each model × per-unit value).
+// `h.count` is in server units, matching the per-unit index above.
+function estimateFromPerUnitIndex(hardware, perUnitIndex) {
+  if (!Array.isArray(hardware) || !perUnitIndex) return null;
   let total = 0, anyHit = false;
   for (const h of hardware) {
     const key = (h.name || "").replace(/^NVIDIA\s+/i, "").replace(/\s*Blackwell\s*$/i, "").trim();
-    const entry = perGpuIndex[key];
-    if (entry?.perGpuUsd && h.count) {
-      total += entry.perGpuUsd * h.count;
+    const entry = perUnitIndex[key];
+    if (entry?.perUnitUsd && h.count) {
+      total += entry.perUnitUsd * h.count;
       anyHit = true;
     }
   }
@@ -138,6 +186,16 @@ function estimateFromPerGpuIndex(hardware, perGpuIndex) {
 // Module-level cache for NFT metadata — these are static per tokenId so cache
 // aggressively. Once we've seen an NFT's cv, never re-fetch it.
 const _metadataCache = new Map();
+
+// USDai stores each collateral NFT's image under a path that encodes the
+// borrower/operator org, e.g. ".../loan_docs/Crucible/2026-04/nvidia_b300_72.png"
+// → "Crucible". This is the most reliable borrower-identity signal available.
+function extractOperator(imageUrl) {
+  if (!imageUrl || typeof imageUrl !== "string") return null;
+  const m = imageUrl.match(/loan_docs\/([^/]+)\//);
+  if (!m) return null;
+  try { return decodeURIComponent(m[1]).trim(); } catch { return m[1].trim(); }
+}
 
 async function fetchMetadata(tokenId) {
   if (_metadataCache.has(tokenId)) return _metadataCache.get(tokenId);
@@ -162,6 +220,7 @@ async function fetchMetadata(tokenId) {
         usefulLifeDays: typeof attrs["Useful Life (days)"] === "number" ? attrs["Useful Life (days)"] : null,
         quantity: typeof attrs["Quantity"] === "number" ? attrs["Quantity"] : null,
         manufacturer: attrs["Manufacturer"] || null,
+        operator: extractOperator(j.image),  // borrower/operator org from image URL path
       };
       _metadataCache.set(tokenId, result);
       return result;
@@ -190,17 +249,55 @@ async function fetchAllMetadata() {
 
 // ─── Bundle indexer helpers ────────────────────────────────────────────────
 
+// Origination timestamps are sourced ONLY on-chain (the USDai API exposes loan
+// `term` but no start/maturity date). The public Arbitrum RPC rate-limits bursts,
+// and each page load fires dozens of parallel lookups — throttled calls used to
+// fail silently (→ null origination → null maturity → missing lifecycle charts).
+// So funnel every RPC through a bounded concurrency gate and retry transient
+// failures with backoff. Reads are idempotent, so retrying is safe.
+const RPC_MAX_CONCURRENT = 6;
+let _rpcInFlight = 0;
+const _rpcQueue = [];
+function _rpcAcquire() {
+  if (_rpcInFlight < RPC_MAX_CONCURRENT) { _rpcInFlight++; return Promise.resolve(); }
+  return new Promise((resolve) => _rpcQueue.push(resolve));
+}
+function _rpcRelease() {
+  const next = _rpcQueue.shift();
+  if (next) next();           // hand the slot directly to the next waiter
+  else _rpcInFlight--;
+}
+const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 async function rpcCall(method, params, timeoutMs = 15000) {
-  const resp = await fetch(ARB_RPC, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!resp.ok) throw new Error(`RPC ${method} ${resp.status}`);
-  const j = await resp.json();
-  if (j.error) throw new Error(`RPC ${method}: ${j.error.message}`);
-  return j.result;
+  await _rpcAcquire();
+  try {
+    let lastErr;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (attempt > 0) await _sleep(300 * 2 ** (attempt - 1) + Math.floor(Math.random() * 200));
+      try {
+        const resp = await fetch(ARB_RPC, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "defi-dash/1.0 (usdai-dashboard)",
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (!resp.ok) throw new Error(`RPC ${method} ${resp.status}`);
+        const j = await resp.json();
+        if (j.error) throw new Error(`RPC ${method}: ${j.error.message}`);
+        return j.result;
+      } catch (e) {
+        lastErr = e;          // transient throttle/timeout — back off and retry
+      }
+    }
+    throw lastErr;
+  } finally {
+    _rpcRelease();
+  }
 }
 
 // Decode BundleMinted event data bytes payload.
@@ -535,6 +632,38 @@ async function fetchVastRentals(vastGpuName) {
   }
 }
 
+// ORN Compute Index — institutional GPU rental-rate index with 90-day daily
+// history. Native coverage of H100 SXM / H200 / B200 / A100 SXM4 / RTX 5090.
+// This is the PRIMARY rental-rate source; Vast.ai is the fallback/cross-check.
+async function fetchOrnIndex(ornGpuName) {
+  try {
+    const r = await fetch(
+      `https://api.ornnai.com/api/gpu/${encodeURIComponent(ornGpuName)}/index-history`,
+      { signal: AbortSignal.timeout(10000) }
+    );
+    if (!r.ok) return { error: `ORN ${ornGpuName} ${r.status}` };
+    const data = await r.json();
+    if (!data?.success || !Array.isArray(data.data) || !data.data.length) {
+      return { latest: null, history: [], change90d: null };
+    }
+    // Downsample to daily (keep last value per UTC day), parse to {date(ms), value}
+    const byDay = new Map();
+    for (const pt of data.data) {
+      const t = new Date(pt.timestamp);
+      if (isNaN(t) || typeof pt.index_value !== "number") continue;
+      byDay.set(t.toISOString().slice(0, 10), { date: t.getTime(), value: pt.index_value });
+    }
+    const history = [...byDay.values()].sort((a, b) => a.date - b.date);
+    if (!history.length) return { latest: null, history: [], change90d: null };
+    const latest = history[history.length - 1].value;
+    const first = history[0].value;
+    const change90d = first > 0 ? (latest / first - 1) : null;
+    return { latest, history, change90d, points: history.length };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
 // Aggregate raw loans into rollup rows keyed by `group` field. USDai's UI
 // shows 7 individual "RTX PRO 6000 [1]" loans as a single "RTX PRO 6000 [7]"
 // row; the `group` field is the canonical key for this rollup.
@@ -563,10 +692,12 @@ function aggregateLoanGroups(loans, bundleCvById = new Map()) {
       location: l.location,
       chain: l.chain,
       principal: 0,
+      remainingPrincipal: 0,
       attestedUsd: 0,
       attestedUsefulLifeDays: l.attestedUsefulLifeDays || 1080,
       originationDate: l.originationDate || null,
       maturityDate: l.maturityDate || null,
+      operator: l.operator || null,
       attestedSourceMix: { "nft-aggregate": 0, "nft-bundle": 0, "nft-direct": 0, "nft-per-server": 0, "replacement-cost": 0 },
       hardware: new Map(),  // name → { name, count, vastGpuName, replacementCost, defaultLifeYears }
       loanCount: 0,
@@ -584,9 +715,11 @@ function aggregateLoanGroups(loans, bundleCvById = new Map()) {
     if (l.isEscrowed) e.isEscrowed = true;
     if (l.escrowedType) e.escrowedTypes.add(l.escrowedType);
     if (l.principal) e.principal += l.principal;
-    // Keep the first non-null origination/maturity we encounter in the group.
+    if (l.remainingPrincipal != null) e.remainingPrincipal += l.remainingPrincipal;
+    // Keep the first non-null origination/maturity/operator we encounter.
     if (e.originationDate == null && l.originationDate != null) e.originationDate = l.originationDate;
     if (e.maturityDate == null && l.maturityDate != null) e.maturityDate = l.maturityDate;
+    if (e.operator == null && l.operator != null) e.operator = l.operator;
     // Dedupe attested cv at the group level:
     //   - Sources backed by a specific bundleId or NFT tokenId count ONCE per group.
     //   - Sources without a unique ID (per-server median, replacement-cost) sum per raw loan.
@@ -685,6 +818,12 @@ function fromWei18(s) {
 }
 
 function parseLoanRow(d) {
+  // The API exposes both original principal (`amount`) and current outstanding
+  // balance (`remainingAmount`). USDai loans amortize monthly via equal
+  // principal payments, so remainingAmount steps down by (origPrincipal / N)
+  // each month.
+  const origPrincipal = fromWei18(d.amount);
+  const remPrincipal = d.remainingAmount != null ? fromWei18(d.remainingAmount) : origPrincipal;
   return {
     documentId: d.documentId,
     name: d.name,
@@ -694,7 +833,8 @@ function parseLoanRow(d) {
     escrowedType: typeof d.escrowed === "string" ? d.escrowed : null,
     borrower: d.borrower,
     chain: d.chain,
-    principal: fromWei18(d.amount),
+    principal: origPrincipal,            // original principal at origination (for chart starting point)
+    remainingPrincipal: remPrincipal,    // current outstanding (for display + chart "today" position)
     apr: d.apr,
     termSeconds: d.term,
     termDays: d.term ? Math.round(d.term / 86400) : null,
@@ -741,19 +881,25 @@ function downsampleDaily(arr) {
 function buildTvlHistory(usdaiHist, llama) {
   const stable = downsampleDaily(usdaiHist?.stablecoinReservesHistory);
   const loans  = downsampleDaily(usdaiHist?.loansReservesHistory);
+  const usdai  = downsampleDaily(usdaiHist?.usdaiTvlHistory);   // unstaked USDai TVL
+  const susdai = downsampleDaily(usdaiHist?.sUsdaiTvlHistory);  // staked sUSDai TVL
   if (!stable.length && !loans.length) {
-    // Fallback: DeFiLlama gives total only, no stable/loans split.
+    // Fallback: DeFiLlama gives total only, no component split.
     return (llama?.tvl || []).map(p => ({
-      date: p.date * 1000, stablecoin: null, loans: null, total: p.totalLiquidityUSD,
+      date: p.date * 1000, stablecoin: null, loans: null, usdai: null, sUsdai: null, total: p.totalLiquidityUSD,
     }));
   }
   const sMap = new Map(stable.map(p => [p.t, p.value]));
   const lMap = new Map(loans.map(p => [p.t, p.value]));
-  const dates = [...new Set([...sMap.keys(), ...lMap.keys()])].sort((a, b) => a - b);
+  const uMap = new Map(usdai.map(p => [p.t, p.value]));
+  const ssMap = new Map(susdai.map(p => [p.t, p.value]));
+  const dates = [...new Set([...sMap.keys(), ...lMap.keys(), ...uMap.keys(), ...ssMap.keys()])].sort((a, b) => a - b);
   return dates.map(t => {
     const s = sMap.get(t) ?? null;
     const l = lMap.get(t) ?? null;
-    return { date: t, stablecoin: s, loans: l, total: (s ?? 0) + (l ?? 0) };
+    const u = uMap.get(t) ?? null;
+    const ss = ssMap.get(t) ?? null;
+    return { date: t, stablecoin: s, loans: l, usdai: u, sUsdai: ss, total: (s ?? 0) + (l ?? 0) };
   });
 }
 
@@ -809,13 +955,40 @@ export default async function handler(req, res) {
   // Build aggregate-roll-up index: ONLY NFTs with qty>1 join here. This stops
   // small per-server NFTs (e.g. "Supermicro NVIDIA B300 Server" qty=1) from
   // accidentally matching a loan that needs the full roll-up valuation.
-  const nameToAggregateMeta = new Map();
+  //
+  // Indexed three ways for robustness (USDai sometimes edits a loan's display
+  // name without updating the NFT): exact name, full-composition signature
+  // (B200:38|H200:10), and dominant-GPU signature (B200:38).
+  const aggByName = new Map();
+  const aggByCompSig = new Map();
+  const aggByDomSig = new Map();
   for (const m of metadataList) {
     if (!m.name || m.collateralValueUsd == null) continue;
     if (m.quantity == null || m.quantity <= 1) continue;
-    const key = m.name.replace(/^NVIDIA\s+/i, "").trim();
-    const prev = nameToAggregateMeta.get(key);
-    if (!prev || m.collateralValueUsd > prev.collateralValueUsd) nameToAggregateMeta.set(key, m);
+    const nameKey = m.name.replace(/^NVIDIA\s+/i, "").trim();
+    const comp = parseNameToComposition(m.name);
+    const compKey = compositionSig(comp);
+    const domKey = dominantSig(comp);
+    const better = (map, k, v) => {
+      if (!k) return;
+      const prev = map.get(k);
+      if (!prev || v.collateralValueUsd > prev.collateralValueUsd) map.set(k, v);
+    };
+    better(aggByName, nameKey, m);
+    better(aggByCompSig, compKey, m);
+    better(aggByDomSig, domKey, m);
+  }
+  // Resolve a loan to its aggregate NFT, trying the most precise signal first:
+  // full composition (from the loan's structured hardware array) → dominant GPU
+  // → full composition parsed from the display name → exact display name.
+  function matchAggregate(loan) {
+    const hwComp = (loan.hardware || []).map(h => ({ model: h.name, count: h.count }));
+    return aggByCompSig.get(compositionSig(hwComp))
+        || aggByDomSig.get(dominantSig(hwComp))
+        || aggByCompSig.get(compositionSig(parseNameToComposition(loan.name)))
+        || aggByDomSig.get(dominantSig(parseNameToComposition(loan.name)))
+        || aggByName.get((loan.name || "").replace(/^NVIDIA\s+/i, "").trim())
+        || null;
   }
 
   // Per-GPU price index from per-server NFTs.
@@ -826,52 +999,6 @@ export default async function handler(req, res) {
 
   // Build the bundle index from on-chain events. Cached at module level.
   const bundleIndex = await buildBundleIndex(metadataById, warnings);
-
-  // ── Pattern C: assign directly-held NFTs to loans by hardware spec ─────────
-  // For loans not covered by an aggregate NFT or an active bundle, allocate
-  // directly-held per-server NFTs (Pattern C) by matching GPU model + count.
-  // Each NFT can be assigned to at most one loan.
-  const patternCAssignment = new Map(); // documentId -> [nft, ...]
-  const patternCOriginationByDoc = new Map(); // documentId -> earliest ms
-  {
-    // Make a working copy of the byModel pools so we can pop NFTs as they're assigned
-    const pools = new Map();
-    for (const [model, nfts] of (bundleIndex.patternCByModel || new Map())) {
-      pools.set(model, nfts.slice());
-    }
-    // Sort loans by stage (deployed first) then by principal (largest first)
-    const sortedRawDeals = rawDeals.slice().sort((a, b) => {
-      if (a.isDeployed !== b.isDeployed) return a.isDeployed ? -1 : 1;
-      return (b.principal || 0) - (a.principal || 0);
-    });
-    for (const loan of sortedRawDeals) {
-      // Skip if already covered by an aggregate NFT or a bundle
-      const loanNameKey = (loan.name || "").replace(/^NVIDIA\s+/i, "").trim();
-      if (nameToAggregateMeta.has(loanNameKey)) continue;
-      // (we'll know later if a bundle was assigned, but Pattern C is a fallback —
-      // try anyway and let later logic prefer bundle if both exist)
-      const assignedNfts = [];
-      let earliestOrigination = null;
-      for (const h of loan.hardware) {
-        const k = (h.name || "").replace(/^NVIDIA\s+/i, "").replace(/\s*Blackwell\s*$/i, "").trim();
-        const model = extractGpuFromNftName(k) || k;
-        const pool = pools.get(model);
-        if (!pool || !pool.length) continue;
-        const taken = pool.splice(0, h.count || 0);
-        assignedNfts.push(...taken);
-        for (const nft of taken) {
-          const ts = bundleIndex.directlyHeldOrigination?.get(nft.tokenId);
-          if (ts && (earliestOrigination == null || ts < earliestOrigination)) {
-            earliestOrigination = ts;
-          }
-        }
-      }
-      if (assignedNfts.length > 0) {
-        patternCAssignment.set(loan.documentId, assignedNfts);
-        if (earliestOrigination) patternCOriginationByDoc.set(loan.documentId, earliestOrigination);
-      }
-    }
-  }
 
   // ── Per-borrower greedy bundle assignment ──────────────────────────────────
   // For each borrower, distribute their active bundles 1:1 across their raw
@@ -908,10 +1035,57 @@ export default async function handler(req, res) {
     }
   }
 
+  // ── Pattern C: assign directly-held NFTs to loans by hardware spec ─────────
+  // For loans NOT already covered by an aggregate NFT or a bundle, allocate
+  // directly-held per-server NFTs (Pattern C) by matching GPU model + count.
+  // Each NFT can be assigned to at most one loan. This must run AFTER bundle
+  // assignment so we don't drain the Pattern C pool for loans that will
+  // get a bundle anyway.
+  const patternCAssignment = new Map(); // documentId -> [nft, ...]
+  const patternCOriginationByDoc = new Map(); // documentId -> earliest ms
+  {
+    const pools = new Map();
+    for (const [model, nfts] of (bundleIndex.patternCByModel || new Map())) {
+      pools.set(model, nfts.slice());
+    }
+    // Iterate only the loans that haven't already been bundle-matched
+    // (and aren't covered by an aggregate NFT). Sort deployed first, then
+    // largest principal — same order as bundle assignment.
+    const unmatched = rawDeals.filter(loan => {
+      if (matchAggregate(loan)) return false;
+      if (loanBundleAssignment.has(loan.documentId)) return false;
+      return true;
+    }).sort((a, b) => {
+      if (a.isDeployed !== b.isDeployed) return a.isDeployed ? -1 : 1;
+      return (b.principal || 0) - (a.principal || 0);
+    });
+    for (const loan of unmatched) {
+      const assignedNfts = [];
+      let earliestOrigination = null;
+      for (const h of loan.hardware) {
+        const k = (h.name || "").replace(/^NVIDIA\s+/i, "").replace(/\s*Blackwell\s*$/i, "").trim();
+        const model = extractGpuFromNftName(k) || k;
+        const pool = pools.get(model);
+        if (!pool || !pool.length) continue;
+        const taken = pool.splice(0, h.count || 0);
+        assignedNfts.push(...taken);
+        for (const nft of taken) {
+          const ts = bundleIndex.directlyHeldOrigination?.get(nft.tokenId);
+          if (ts && (earliestOrigination == null || ts < earliestOrigination)) {
+            earliestOrigination = ts;
+          }
+        }
+      }
+      if (assignedNfts.length > 0) {
+        patternCAssignment.set(loan.documentId, assignedNfts);
+        if (earliestOrigination) patternCOriginationByDoc.set(loan.documentId, earliestOrigination);
+      }
+    }
+  }
+
   const tbills = por_array.filter(x => x.type === "TBILL").map(parseTbillRow);
   const loans = rawDeals.map(loan => {
-    const key = (loan.name || "").replace(/^NVIDIA\s+/i, "").trim();
-    const aggMeta = nameToAggregateMeta.get(key);
+    const aggMeta = matchAggregate(loan);
     // Enrich each hardware item with its GPU-map lookup (Vast.ai proxy info)
     // and attach the per-GPU NFT price for transparency.
     const hardware = loan.hardware.map(h => {
@@ -924,11 +1098,13 @@ export default async function handler(req, res) {
         percentage: h.percentage,
         vastGpuName: m?.vast ?? null,
         vastProxy: m?.vastProxy ?? null,
+        ornName: m?.orn ?? null,
+        ornProxy: m?.ornProxy ?? null,
         replacementCost: m?.replacementCost ?? null,  // last-resort fallback & DCF salvage anchor
         defaultLifeYears: m?.life ?? null,
-        // NFT-derived per-GPU price (from per-server NFTs). null when the
-        // model has no per-server NFT samples in the inventory.
-        perGpuUsdFromNft: idxEntry?.perGpuUsd ?? null,
+        // NFT-derived per-server-unit collateral value (from per-server NFTs).
+        // null when the model has no per-server NFT samples in the inventory.
+        perUnitUsdFromNft: idxEntry?.perUnitUsd ?? null,
         nftSampleCount: idxEntry?.nftCount ?? 0,
       };
     });
@@ -987,7 +1163,7 @@ export default async function handler(req, res) {
       }
 
       if (attestedUsd == null) {
-        const v = estimateFromPerGpuIndex(hardware, perGpuIndex);
+        const v = estimateFromPerUnitIndex(hardware, perGpuIndex);
         if (v != null) {
           attestedUsd = v;
           attestedSource = "nft-per-server";
@@ -1001,12 +1177,32 @@ export default async function handler(req, res) {
       }
     }
 
+    // Operator (borrower org): from the matched NFT(s). Try aggregate first,
+    // then any bundle/direct member NFT, then any per-server NFT of this model.
+    let operator = aggMeta?.operator ?? null;
+    if (!operator && Array.isArray(matchedBundleNfts)) {
+      for (const n of matchedBundleNfts) {
+        const op = metadataById.get(n.tokenId)?.operator;
+        if (op) { operator = op; break; }
+      }
+    }
+    if (!operator) {
+      // Fallback: any per-server NFT matching this loan's hardware model
+      for (const h of hardware) {
+        const key = (h.name || "").replace(/^NVIDIA\s+/i, "").replace(/\s*Blackwell\s*$/i, "").trim();
+        const sample = perGpuIndex[key]?.samples?.[0]?.tokenId;
+        const op = sample != null ? metadataById.get(sample)?.operator : null;
+        if (op) { operator = op; break; }
+      }
+    }
+
     return {
       ...loan,
       hardware,
       tokenId: aggMeta?.tokenId ?? null,
       bundleId: matchedBundleId,
       bundleNfts: matchedBundleNfts,
+      operator,
       attestedUsd,
       attestedSource,
       attestedUsefulLifeDays: aggMeta?.usefulLifeDays ?? 1080,
@@ -1017,22 +1213,63 @@ export default async function handler(req, res) {
     };
   });
 
-  // Phase 2: fan out to Vast.ai for each distinct mapped GPU model in the loans,
+  // Phase 2: fan out to rental-rate sources for each distinct GPU in the loans,
   // INCLUDING proxy names (e.g. B200 as a stand-in for B300).
+  const allHardware = loans.flatMap(l => l.hardware);
+
+  // 2a. Vast.ai (fallback + cross-check + workstation cards)
   const vastNameSet = new Set();
+  for (const h of allHardware) {
+    if (h.vastGpuName) vastNameSet.add(h.vastGpuName);
+    if (h.vastProxy)   vastNameSet.add(h.vastProxy);
+  }
+  // 2b. ORN Compute Index (primary, institutional DC GPUs)
+  const ornNameSet = new Set();
+  for (const h of allHardware) {
+    if (h.ornName)  ornNameSet.add(h.ornName);
+    if (h.ornProxy) ornNameSet.add(h.ornProxy);
+  }
+
+  const [vastResults, ornResults] = await Promise.all([
+    Promise.all([...vastNameSet].map(async (name) => {
+      const r = await fetchVastRentals(name);
+      if (r.error) warnings.push(`vast ${name}: ${r.error}`);
+      return [name, { ...r, updatedAt: new Date().toISOString() }];
+    })),
+    Promise.all([...ornNameSet].map(async (name) => {
+      const r = await fetchOrnIndex(name);
+      if (r.error) warnings.push(`orn ${name}: ${r.error}`);
+      return [name, { ...r, updatedAt: new Date().toISOString() }];
+    })),
+  ]);
+  const gpuRentals = Object.fromEntries(vastResults);
+  const ornIndex = Object.fromEntries(ornResults);
+
+  // Unified per-GPU effective $/hr. Precedence prefers a NATIVE price over a
+  // PROXY price across sources (a real B300 quote beats a B200 stand-in), and
+  // ORN over Vast.ai when both are native (ORN is the institutional index):
+  //   1. ORN native  2. Vast native  3. ORN proxy  4. Vast proxy
+  function effectiveRate(h) {
+    const ornNative = h.ornName ? ornIndex[h.ornName]?.latest : null;
+    if (ornNative != null) return { dph: ornNative, source: "orn", proxy: null };
+    const vastNative = h.vastGpuName ? gpuRentals[h.vastGpuName]?.medianDph : null;
+    if (vastNative != null) return { dph: vastNative, source: "vast", proxy: null };
+    const ornProx = h.ornProxy ? ornIndex[h.ornProxy]?.latest : null;
+    if (ornProx != null) return { dph: ornProx, source: "orn", proxy: h.ornProxy };
+    const vastProx = h.vastProxy ? gpuRentals[h.vastProxy]?.medianDph : null;
+    if (vastProx != null) return { dph: vastProx, source: "vast", proxy: h.vastProxy };
+    return { dph: null, source: null, proxy: null };
+  }
+
+  // Annotate each loan's hardware with the effective $/hr + which source it came from.
   for (const l of loans) {
     for (const h of l.hardware) {
-      if (h.vastGpuName) vastNameSet.add(h.vastGpuName);
-      if (h.vastProxy)   vastNameSet.add(h.vastProxy);
+      const eff = effectiveRate(h);
+      h.effectiveDph = eff.dph;
+      h.rateSource = eff.source;       // "orn" | "vast" | null
+      h.rateProxy = eff.proxy;         // proxy gpu name if a stand-in was used
     }
   }
-  const vastNames = [...vastNameSet];
-  const rentalsArr = await Promise.all(vastNames.map(async (name) => {
-    const r = await fetchVastRentals(name);
-    if (r.error) warnings.push(`vast ${name}: ${r.error}`);
-    return [name, { ...r, updatedAt: new Date().toISOString() }];
-  }));
-  const gpuRentals = Object.fromEntries(rentalsArr);
 
   // Supply endpoints return {result: "decimal string"} (NOT 18-decimal wei).
   const parseDecimal = (v) => {
@@ -1050,9 +1287,21 @@ export default async function handler(req, res) {
     expectedApy: expectedApy?.result?.projectedApy ?? null,
     expectedApyBreakdown: expectedApy?.result?.breakdown ?? null,
     netApy: netApy?.result ?? null,
-    utilization: util?.result ?? null,
-    usdaiSupply: parseDecimal(supplyUsdai),
-    susdaiSupply: parseDecimal(supplySusdai),
+    // USDai's "utilization" metric is actually the stake rate: sUSDai TVL /
+    // Total TVL. It's NOT a credit-utilization (loans/TVL). The label in the
+    // UI clarifies this.
+    stakeRate: util?.result ?? null,                  // % of TVL in sUSDai vault
+    // Loan utilization (capital deployed as loans / total reserves) — a true
+    // credit-utilization metric, computed from the reserves breakdown.
+    loanUtilization: reserves.total ? (reserves.loans / reserves.total) * 100 : null,
+    // USDai-as-USDai TVL (unstaked) and sUSDai TVL — sum to total TVL.
+    // These are the meaningful "supply" splits for users.
+    usdaiTvl: tvl?.usdaiTvl ?? (reserves.total != null && tvl?.sUsdaiTvl != null ? reserves.total - tvl.sUsdaiTvl : null),
+    sUsdaiTvl: tvl?.sUsdaiTvl ?? null,
+    // Cross-chain ERC20 supply totals (not the same as TVL split — these
+    // include LayerZero-bridged supply on Ethereum/Base/Plasma).
+    usdaiCrossChainSupply: parseDecimal(supplyUsdai),
+    susdaiCrossChainSupply: parseDecimal(supplySusdai),
     mintedUsdai: tvl?.mintedUsdai ?? null,
   };
 
@@ -1070,8 +1319,9 @@ export default async function handler(req, res) {
     loans,
     loanGroups,
     tbills,
-    gpuRentals,
-    perGpuIndex,  // NFT-derived per-GPU price index for transparency
+    gpuRentals,        // Vast.ai live medians (fallback + cross-check)
+    ornIndex,          // ORN Compute Index: primary rental rate + 90-day history
+    perGpuIndex,       // NFT-derived per-server-unit collateral index for transparency
     warnings,
   });
 }

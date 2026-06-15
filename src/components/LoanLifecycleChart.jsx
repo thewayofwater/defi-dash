@@ -53,6 +53,7 @@ const mono = "'JetBrains Mono', monospace";
  */
 export default function LoanLifecycleChart({
   originationDate, maturityDate, originalPrincipal, originalCollateral,
+  remainingPrincipal,               // current outstanding principal — drives "today" marker
   depreciationRatePerYear = 0.25,   // conservative liquidation view: 4-year useful life
   accent = "#c8b88a",
 }) {
@@ -66,8 +67,15 @@ export default function LoanLifecycleChart({
 
   const now = Date.now();
   const yearMs = 365 * 24 * 3600 * 1000;
+  const monthMs = 30.4375 * 24 * 3600 * 1000;  // average month length
   const termYears = (maturityDate - originationDate) / yearMs;
   const origLtv   = originalPrincipal / originalCollateral;
+
+  // USDai loans pay monthly with equal principal payments. So principal balance
+  // is a STEP function: drops by (origPrincipal / termMonths) on each payment
+  // date, flat between payments. Approximated as 30.44-day months.
+  const termMonths = Math.max(1, Math.round((maturityDate - originationDate) / monthMs));
+  const principalPerPayment = originalPrincipal / termMonths;
 
   // x-axis horizon: out to either maturity or end of GPU's physical life,
   // whichever is later. End of physical life = 1 / depRate.
@@ -75,58 +83,66 @@ export default function LoanLifecycleChart({
   const horizonYears = Math.max(termYears, physicalLifeYears);
   const horizonEnd = originationDate + horizonYears * yearMs;
 
-  const principalFracAt = (y) => origLtv * Math.max(0, 1 - y / termYears);
-  const collateralFracAt = (y) => Math.max(0, 1 - depreciationRatePerYear * y);
-  const ltvAt = (y) => {
-    const c = collateralFracAt(y);
-    return c > 0 ? principalFracAt(y) / c : 0;
+  // Discrete monthly principal balance (step function): how many full monthly
+  // payments have been made by time t?
+  const monthsElapsedAt = (t) => Math.max(0, Math.min(termMonths, Math.floor((t - originationDate) / monthMs)));
+  const principalAt = (t) => Math.max(0, originalPrincipal - monthsElapsedAt(t) * principalPerPayment);
+  const principalFracAt = (t) => principalAt(t) / originalCollateral;
+  // Collateral depreciates monthly too — same step cadence for consistency
+  const collateralFracAt = (t) => {
+    const monthsFromOrigin = Math.max(0, Math.floor((t - originationDate) / monthMs));
+    return Math.max(0, 1 - (depreciationRatePerYear / 12) * monthsFromOrigin);
+  };
+  const ltvAt = (t) => {
+    const c = collateralFracAt(t);
+    return c > 0 ? principalFracAt(t) / c : 0;
   };
 
-  // Build data points. Each point carries everything needed for both lines,
-  // the cushion-range Area, and tooltip $-value labels.
-  // Both lines are % of original collateral so they're directly comparable.
-  // Principal line = principal / origCollateral, GPU line = collateral / origCollateral.
-  // Current LTV ratio (= principal / current_collateral) is computed for tooltip/header only.
+  // Build data points at every monthly payment cadence — emit one point
+  // just BEFORE and one AT each payment date so the line steps cleanly.
+  // (Recharts type="stepAfter" handles this rendering.)
   const points = [];
-  const N = 60;
   const sampleAt = (t) => {
-    const y = (t - originationDate) / yearMs;
-    const gpu = collateralFracAt(y);                  // collateral % of original
-    const principal = principalFracAt(y);             // principal % of original (== origLtv × amort factor)
-    const ltv = gpu > 0 ? principal / gpu : 0;        // CURRENT LTV (for annotations only)
+    const gpu = collateralFracAt(t);
+    const principal = principalFracAt(t);
+    const ltv = gpu > 0 ? principal / gpu : 0;
     return {
       t,
       gpu,
       principalLine: principal,
-      // Range Area: from principal line up to GPU line. Since origLtv < 1 and
-      // amortization is faster than depreciation (depRate × term < 1 - origLtv
-      // for any sensible loan), principalLine ≤ gpu always.
-      cushionRange: [principal, gpu],
-      // For tooltip:
+      cushionRange: [Math.min(principal, gpu), gpu],
       ltv,
       gpuUsd: gpu * originalCollateral,
       principalUsd: principal * originalCollateral,
       equityUsd: Math.max(0, (gpu - principal) * originalCollateral),
     };
   };
-  for (let i = 0; i <= N; i++) {
-    const t = originationDate + (horizonEnd - originationDate) * (i / N);
+  // Origination
+  points.push(sampleAt(originationDate));
+  // Monthly payment dates
+  const totalMonths = Math.ceil((horizonEnd - originationDate) / monthMs);
+  for (let m = 1; m <= totalMonths; m++) {
+    const t = originationDate + m * monthMs;
+    if (t > horizonEnd) break;
     points.push(sampleAt(t));
   }
-  // Insert an exact-maturity sample so the kink renders cleanly
-  points.push(sampleAt(maturityDate));
-  points.sort((a, b) => a.t - b.t);
+  // Always include the exact horizon end so the chart fills to the edge
+  if (points[points.length - 1].t < horizonEnd) {
+    points.push(sampleAt(horizonEnd));
+  }
 
-  // Today's snapshot for header tile
-  const todayYears = Math.max(0, (now - originationDate) / yearMs);
-  const todayGpu = collateralFracAt(todayYears);
-  const todayLtv = ltvAt(todayYears);
-  const todayPrincipalUsd  = principalFracAt(todayYears) * originalCollateral;
+  // Today's snapshot for header tile. Prefer the ACTUAL remaining principal
+  // from the API (which reflects whether the latest monthly payment has been
+  // made yet) over the modeled step-function value.
+  const todayGpu = collateralFracAt(now);
+  const todayPrincipalUsdActual = (remainingPrincipal != null) ? remainingPrincipal : principalAt(now);
+  const todayPrincipalFrac = todayPrincipalUsdActual / originalCollateral;
+  const todayLtv = todayGpu > 0 ? todayPrincipalFrac / todayGpu : 0;
   const todayCollateralUsd = todayGpu * originalCollateral;
-  const todayEquityUsd     = Math.max(0, todayCollateralUsd - todayPrincipalUsd);
+  const todayEquityUsd     = Math.max(0, todayCollateralUsd - todayPrincipalUsdActual);
 
   // Year-1 LTV for the header
-  const y1Ltv = termYears >= 1 ? ltvAt(1) : null;
+  const y1Ltv = termYears >= 1 ? ltvAt(originationDate + yearMs) : null;
 
   const fmtPct = (v) => `${Math.round((v ?? 0) * 100)}%`;
   const fmtUsd = (n) => {
@@ -136,6 +152,7 @@ export default function LoanLifecycleChart({
     return `$${Math.round(n)}`;
   };
   const fmtDate = (v) => new Date(v).toLocaleDateString(undefined, { month: "short", year: "2-digit" });
+  const fmtTooltipDate = (v) => new Date(v).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 
   const legendItemStyle = { display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: "#94a3b8", fontFamily: mono };
 
@@ -169,8 +186,8 @@ export default function LoanLifecycleChart({
         </div>
       </div>
       <div style={{ fontSize: 9, color: "#4f5e6f", fontFamily: mono, marginBottom: 4 }}>
-        Model: straight-line amortization to 0% over loan term; linear bundle depreciation at {Math.round(depreciationRatePerYear * 100)}%/year
-        (4-year useful life, conservative liquidation-recovery view — discounts hyperscaler accounting for secondary-market illiquidity).
+        Model: straight-line amortization with equal monthly principal payments ({termMonths}-month term); bundle depreciation at {Math.round(depreciationRatePerYear * 100)}%/year linear
+        (4-year useful life, conservative liquidation-recovery view).
       </div>
       <div style={{ width: "100%", height: 210 }}>
         <ResponsiveContainer>
@@ -186,18 +203,18 @@ export default function LoanLifecycleChart({
               width={42} />
             <Tooltip
               contentStyle={{ background: "#131926", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 5, fontSize: 10, fontFamily: mono, color: "#e2e8f0" }}
-              labelFormatter={(v) => new Date(v).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+              labelFormatter={fmtTooltipDate}
               formatter={(v, k, item) => {
                 const p = item?.payload || {};
                 if (k === "gpu")           return [`${fmtPct(v)} (${fmtUsd(p.gpuUsd)})`, "GPU collateral"];
                 if (k === "principalLine") return [`${fmtPct(v)} (${fmtUsd(p.principalUsd)} · LTV ${fmtPct(p.ltv)})`, "Loan principal"];
                 return [null, null];
               }} />
-            {/* Range Area for the cushion between the two lines (Recharts native pattern) */}
-            <Area type="monotone" dataKey="cushionRange" stroke="none" fill={accent} fillOpacity={0.18} isAnimationActive={false} legendType="none" />
-            {/* Lines on top */}
-            <Line type="monotone" dataKey="gpu"           stroke="#94a3b8" strokeDasharray="4 3" strokeWidth={1.5} dot={false} isAnimationActive={false} />
-            <Line type="monotone" dataKey="principalLine" stroke={accent}  strokeWidth={2} dot={false} isAnimationActive={false} />
+            {/* Cushion between the two lines */}
+            <Area type="linear" dataKey="cushionRange" stroke="none" fill={accent} fillOpacity={0.18} isAnimationActive={false} legendType="none" />
+            {/* Lines sampled at monthly cadence but rendered as a smooth linear connect */}
+            <Line type="linear" dataKey="gpu"           stroke="#94a3b8" strokeDasharray="4 3" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+            <Line type="linear" dataKey="principalLine" stroke={accent}  strokeWidth={2} dot={false} isAnimationActive={false} />
             <ReferenceLine x={now} stroke="#22d3ee" strokeWidth={1} strokeDasharray="2 2"
               label={{ value: "today", position: "top", fill: "#22d3ee", fontSize: 9, fontFamily: mono }} />
             <ReferenceLine x={maturityDate} stroke="#4f5e6f" strokeWidth={1}

@@ -11,27 +11,47 @@
 // generation like B300) borrow the rental rate from a closely related GPU
 // (e.g. B200, same architecture family) as a stand-in. The UI labels these
 // rows as "(<proxy> proxy)" so users know the rental rate isn't native.
+//
+// `orn` = ORN Compute Index gpu name (api.ornnai.com). ORN is the PRIMARY
+// rental-rate source for institutional DC GPUs (it natively covers H100/H200/
+// B200/A100/RTX 5090 with 90-day daily history). Vast.ai is the fallback /
+// cross-check, and the only source for workstation cards (RTX PRO 6000).
+// `ornProxy` works like vastProxy — B300 borrows B200's ORN index.
+// ORN supported models (verified): "H100 SXM", "H200", "B200", "A100 SXM4", "RTX 5090".
 export const USDAI_GPU_MAP = {
-  "H100":                    { vast: "H100 SXM",  life: 4, replacementCost: 27_000 },
-  "H100 SXM":                { vast: "H100 SXM",  life: 4, replacementCost: 27_000 },
-  "H100 NVL":                { vast: "H100 NVL",  life: 4, replacementCost: 26_000 },
-  "H200":                    { vast: "H200",      life: 4, replacementCost: 33_000 },
-  "H200 NVL":                { vast: "H200 NVL",  life: 4, replacementCost: 32_000 },
-  "B200":                    { vast: "B200",      life: 5, replacementCost: 50_000 },
-  // B300 has no Vast.ai listings (too new); use B200 as proxy since it's the same
-  // Blackwell architecture, similar form factor, and the most recent listed gen.
-  "B300":                    { vast: null, vastProxy: "B200", life: 5, replacementCost: 65_000 },
-  // RTX PRO 6000 Blackwell maps to RTX PRO 6000 WS (workstation) — the most populous
-  // Blackwell-gen workstation listing on Vast.ai.
-  "RTX PRO 6000":            { vast: "RTX PRO 6000 WS", life: 4, replacementCost: 10_000 },
-  "RTX PRO 6000 Blackwell":  { vast: "RTX PRO 6000 WS", life: 4, replacementCost: 10_000 },
-  "RTX 5090":                { vast: "RTX 5090",  life: 4, replacementCost: 2_500 },
-  "RTX 4090":                { vast: "RTX 4090",  life: 4, replacementCost: 1_800 },
-  "A100":                    { vast: "A100 SXM4", life: 4, replacementCost: 12_000 },
-  "A100 PCIe":               { vast: "A100 PCIE", life: 4, replacementCost: 11_000 },
-  "L40S":                    { vast: "L40S",      life: 4, replacementCost: 7_000 },
-  "L40":                     { vast: "L40",       life: 4, replacementCost: 5_000 },
+  "H100":                    { orn: "H100 SXM",  vast: "H100 SXM",  life: 4, replacementCost: 27_000 },
+  "H100 SXM":                { orn: "H100 SXM",  vast: "H100 SXM",  life: 4, replacementCost: 27_000 },
+  "H100 NVL":                { orn: "H100 SXM",  vast: "H100 NVL",  life: 4, replacementCost: 26_000 },
+  "H200":                    { orn: "H200",      vast: "H200",      life: 4, replacementCost: 33_000 },
+  "H200 NVL":                { orn: "H200",      vast: "H200 NVL",  life: 4, replacementCost: 32_000 },
+  "B200":                    { orn: "B200",      vast: "B200",      life: 5, replacementCost: 50_000 },
+  // B300 (Blackwell Ultra): ORN doesn't list it yet, but Vast.ai now has native
+  // B300 listings (~$8/hr per GPU). Native Vast beats the ORN B200-proxy via the
+  // native-over-proxy precedence in effectiveRate(). ornProxy kept as last resort.
+  "B300":                    { orn: null, ornProxy: "B200", vast: "B300", vastProxy: "B200", life: 5, replacementCost: 65_000 },
+  "B300 DGX":                { orn: null, ornProxy: "B200", vast: "B300", vastProxy: "B200", life: 5, replacementCost: 70_000 },
+  // RTX PRO 6000 Blackwell — ORN doesn't cover workstation cards; Vast.ai does
+  // ("RTX PRO 6000 WS", the most populous Blackwell-gen workstation listing).
+  "RTX PRO 6000":            { orn: null, vast: "RTX PRO 6000 WS", life: 4, replacementCost: 10_000 },
+  "RTX PRO 6000 Blackwell":  { orn: null, vast: "RTX PRO 6000 WS", life: 4, replacementCost: 10_000 },
+  "RTX 5090":                { orn: "RTX 5090",  vast: "RTX 5090",  life: 4, replacementCost: 2_500 },
+  "RTX 4090":                { orn: null,        vast: "RTX 4090",  life: 4, replacementCost: 1_800 },
+  "A100":                    { orn: "A100 SXM4", vast: "A100 SXM4", life: 4, replacementCost: 12_000 },
+  "A100 PCIe":               { orn: "A100 SXM4", vast: "A100 PCIE", life: 4, replacementCost: 11_000 },
+  "L40S":                    { orn: null,        vast: "L40S",      life: 4, replacementCost: 7_000 },
+  "L40":                     { orn: null,        vast: "L40",       life: 4, replacementCost: 5_000 },
 };
+
+// Distinct ORN gpu names for a set of hardware entries (incl. proxies).
+export function distinctOrnNames(hardwareEntries) {
+  const out = new Set();
+  for (const h of hardwareEntries) {
+    const m = lookupGpu(typeof h === "string" ? h : h?.name);
+    if (m?.orn) out.add(m.orn);
+    if (m?.ornProxy) out.add(m.ornProxy);
+  }
+  return [...out];
+}
 
 // Normalize USDai hardware names. Examples:
 //   "B200 [96] (Escrowed)"  → "B200"
