@@ -13,7 +13,7 @@ export function useWbtcPegData(days = 90) {
   const [refreshKey, setRefreshKey] = useState(0);
 
   const daysParam = days === "all" ? 1000 : days;
-  const url = `/api/wbtc-peg?days=${daysParam}`;
+  const url = `/api/wbtc?view=peg&days=${daysParam}`;
 
   const fetchData = useCallback(
     (isInitial = false) => {

@@ -2,6 +2,13 @@
 // Aggregates data from:
 // - wbtc.network (BTC custodian reserves, Ethereum mint/burn txs, BitGo-attested data)
 // - Per-chain RPCs (supply on each chain + mint/burn Transfer events where possible)
+//
+// Also serves WBTC peg + pool-health data via ?view=peg|pools — consolidated from
+// the former /api/wbtc-peg and /api/wbtc-pools functions to stay within Vercel's
+// Hobby-plan 12-function limit. Their logic now lives in ../lib (not under api/,
+// so they no longer count as separate serverless functions).
+import { pegHandler } from "../lib/wbtc-peg.js";
+import { poolsHandler } from "../lib/wbtc-pools.js";
 
 const WBTC_API = "https://wbtc.network/api/wbtc";
 
@@ -343,6 +350,11 @@ async function fetchAllChainEvents() {
 // ─── Handler ───
 
 export default async function handler(req, res) {
+  // Consolidated sub-views (kept in one function for Vercel's Hobby 12-fn cap).
+  const view = req.query?.view;
+  if (view === "peg") return pegHandler(req, res);
+  if (view === "pools") return poolsHandler(req, res);
+
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET");
   res.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=60");

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 
-const URL = "/api/wbtc-pools";
+const URL = "/api/wbtc?view=pools";
 
 export function useWbtcPoolsData() {
   const [data, setData] = useState({ pools: [], summary: null });

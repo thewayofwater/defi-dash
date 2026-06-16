@@ -342,6 +342,7 @@ export default defineConfig(({ mode }) => {
           server.middlewares.use("/api/wbtc", async (req, res) => {
             try {
               const wbtcHandler = await import("./api/wbtc.js");
+              const query = Object.fromEntries(new URL(req.url, "http://localhost").searchParams);
               const fakeRes = {
                 statusCode: 200,
                 headers: {},
@@ -354,7 +355,7 @@ export default defineConfig(({ mode }) => {
                   res.end(JSON.stringify(data));
                 },
               };
-              await wbtcHandler.default(req, fakeRes);
+              await wbtcHandler.default({ ...req, query }, fakeRes);
             } catch (err) {
               console.error("WBTC proxy error:", err);
               res.statusCode = 500;
